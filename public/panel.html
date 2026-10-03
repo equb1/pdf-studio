@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PDF 工作台 · dsh-pdf-studio</title>
+<!--
+  Standalone host of the surface script. The in-page injection creates the
+  same script element straight into the running shell's document; this file
+  exists so the surface can also be opened directly for debugging, and so the
+  asset route has an HTML counterpart to serve.
+-->
+<style>
+  html,body{margin:0;height:100%;background:#070b1a;color:#e6ebf8;
+    font:13px/1.5 system-ui,-apple-system,"PingFang SC",sans-serif}
+  .note{padding:16px 18px;max-width:640px;color:#9aa8d8}
+  code{font-family:ui-monospace,Menlo,monospace;color:#c7d2fe}
+</style>
+</head>
+<body>
+<div class="note">
+  <p><strong>dsh-pdf-studio</strong> 的界面以浮层形式注入运行中的 DSH 页面。</p>
+  <p>这个文件是同一份 surface 脚本的独立宿主，用于调试：脚本会在此页右下角挂载入口。</p>
+  <p>API 前缀：<code>/api/pdf-studio</code></p>
+</div>
+<script src="/dsh-pdf-studio/app.js"></script>
+</body>
+</html>

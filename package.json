@@ -1,0 +1,58 @@
+{
+  "name": "dsh-pdf-studio",
+  "version": "0.1.0",
+  "description": "DSH PDF Studio — host-only PDF editing surface for both the web GUI and the desktop app: per-page triage, text-layer extraction, OCR for scans, and searchable-PDF rebuild.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "files": [
+    "lib",
+    "public",
+    "scripts",
+    "test",
+    "README.md",
+    "cordis.patch.yml"
+  ],
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test:routes": "node --experimental-strip-types test/routes.test.mjs",
+    "test:text-layer": "node test/text-layer.test.mjs",
+    "test:ocr": "node test/ocr.test.mjs",
+    "test:searchable": "node --experimental-strip-types test/searchable-pdf.test.mjs",
+    "test:pipeline": "node --experimental-strip-types test/pipeline.test.mjs",
+    "test": "npm run test:routes && npm run test:text-layer && npm run test:content-stream && npm run test:readable-runs && npm run test:text-editor && npm run test:canvas-ui && npm run test:tools && npm run test:watermark && npm run test:qpdf && npm run test:searchable && npm run test:pipeline",
+    "test:content-stream": "node --experimental-strip-types test/content-stream.test.mjs",
+    "test:text-editor": "node --experimental-strip-types test/text-editor.test.mjs",
+    "test:readable-runs": "node --experimental-strip-types test/readable-runs.test.mjs",
+    "test:canvas-ui": "node --experimental-strip-types test/canvas-ui.test.mjs",
+    "test:qpdf": "node --experimental-strip-types test/qpdf.test.mjs",
+    "test:watermark": "node --experimental-strip-types test/watermark.test.mjs",
+    "test:tools": "node --experimental-strip-types test/tools.test.mjs"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.8",
+    "fontkit": "^2.0.4",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "6.2.108",
+    "tesseract.js": "^7.0.0",
+    "tesseract.js-core": "^7.0.0"
+  },
+  "devDependencies": {
+    "@jspawn/qpdf-wasm": "^0.0.2",
+    "esbuild": "^0.28.2",
+    "jsdom": "^29.1.1",
+    "qpdf-wasm": "^0.1.0"
+  }
+}

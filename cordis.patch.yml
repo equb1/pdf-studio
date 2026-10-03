@@ -1,0 +1,8 @@
+# dsh-pdf-studio bundle patch: inserts the plugin row into whichever profile
+# loads this bundle. The package is host-only — it declares no `dsh.client`
+# — so its surface is injected over `webServer.tapIndex` (web shell) and
+# `webserver/index-inject` (desktop shell) rather than through the
+# client-module system. See src/index.ts for why.
+- insert:
+    - id: pdf-studio
+      name: dsh-pdf-studio
