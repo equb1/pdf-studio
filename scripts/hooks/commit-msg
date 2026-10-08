@@ -1,0 +1,45 @@
+#!/bin/sh
+# commit-msg 钩子：按《AGENTS.md：Git 提交规范》校验提交信息（中文 Conventional Commits）。
+#
+# 由 `node scripts/install-hooks.mjs` 通过 `git config core.hooksPath scripts/hooks` 启用，
+# 规则实现只有一份：scripts/commit-lint.mjs（提交助手 scripts/commit.mjs 也用它自检）。
+#
+# 想临时绕过：git commit --no-verify
+set -u
+
+msg_file="${1:-}"
+if [ -z "$msg_file" ] || [ ! -f "$msg_file" ]; then
+  echo "commit-msg: 未收到提交信息文件，跳过校验" >&2
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "⚠️  commit-msg: 未找到 node，跳过提交信息校验（建议安装 Node 后重试）" >&2
+  exit 0
+fi
+
+# 先找本仓库的校验脚本（core.hooksPath 也可以是全局配置，那时本仓库未必有脚本）。
+top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+lint=""
+for candidate in \
+  "${top:-}/scripts/commit-lint.mjs" \
+  "$(dirname "$0")/../commit-lint.mjs"
+do
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    lint="$candidate"
+    break
+  fi
+done
+
+if [ -z "$lint" ]; then
+  echo "⚠️  commit-msg: 未找到 scripts/commit-lint.mjs，跳过校验" >&2
+  exit 0
+fi
+
+if ! node "$lint" --file "$msg_file"; then
+  echo "" >&2
+  echo "提交已被 commit-msg 钩子拦下。用交互式助手重新组织提交信息：" >&2
+  echo "  npm run commit" >&2
+  echo "（确实不适用规范时：git commit --no-verify）" >&2
+  exit 1
+fi

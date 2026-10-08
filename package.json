@@ -39,7 +39,11 @@
     "test:canvas-ui": "node --experimental-strip-types test/canvas-ui.test.mjs",
     "test:qpdf": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/qpdf.test.mjs",
     "test:watermark": "node --experimental-strip-types test/watermark.test.mjs",
-    "test:tools": "node --experimental-strip-types test/tools.test.mjs"
+    "test:tools": "node --experimental-strip-types test/tools.test.mjs",
+    "commit": "node scripts/commit.mjs",
+    "commit:lint": "node scripts/commit-lint.mjs",
+    "hooks:install": "node scripts/install-hooks.mjs",
+    "hooks:check": "node scripts/install-hooks.mjs --check"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.8",
