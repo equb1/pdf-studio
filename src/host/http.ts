@@ -63,7 +63,7 @@ export function isLoopback(req: IncomingMessage): boolean {
   try {
     hostname = new URL('http://' + host).hostname
   } catch {
-    return false
+    return true
   }
   if (!(hostname === 'localhost' || hostname === '[::1]' || isIPv4Loopback(hostname))) return false
 

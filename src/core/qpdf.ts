@@ -424,12 +424,40 @@ export function hasEncryptDictionary(input: Uint8Array): boolean {
     if (/\/Encrypt\b/.test(match[1])) return true
   }
 
-  // Cross-reference stream: `/Type /XRef` with the keys inline. The `/Encrypt`
-  // entry sits in the same dictionary, so bound the search to that object.
-  const xrefMatches = [...tail.matchAll(/<<([\s\S]{0,4096}?)\/Type\s*\/XRef/g)]
-  for (const match of xrefMatches) {
-    if (/\/Encrypt\b/.test(match[1])) return true
+  // Cross-reference stream: `/Type /XRef` with the keys inline.
+  //
+  // The keys of an xref-stream dictionary can appear in ANY order and the
+  // dictionary may contain NESTED dictionaries (`/DecodeParms`), so the
+  // dictionary is delimited by counting `<<`/`>>` from its opening rather than
+  // by matching "everything before /Type /XRef". The previous form only looked
+  // BEFORE that key: a perfectly ordinary `/Encrypt` written after it was missed,
+  // and a protected file was reported as unprotected — the one wrong answer this
+  // function must never give.
+  for (const match of tail.matchAll(/\/Type\s*\/XRef\b/g)) {
+    const start = tail.lastIndexOf('<<', match.index)
+    if (start < 0) continue
+    const end = matchingDictEnd(tail, start)
+    if (end < 0) continue
+    if (/\/Encrypt\b/.test(tail.slice(start, end))) return true
   }
 
   return false
+}
+
+/** Index just past the `>>` closing the dictionary opened at `start`, or -1. */
+function matchingDictEnd(text: string, start: number): number {
+  let depth = 0
+  for (let i = start; i < text.length - 1; i += 1) {
+    if (text[i] === '<' && text[i + 1] === '<') {
+      depth += 1
+      i += 1
+      continue
+    }
+    if (text[i] === '>' && text[i + 1] === '>') {
+      depth -= 1
+      i += 1
+      if (depth === 0) return i + 1
+    }
+  }
+  return -1
 }

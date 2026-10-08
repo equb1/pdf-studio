@@ -147,13 +147,18 @@ await test('list rejects a directory outside the workspace', async () => {
   assert.equal(JSON.parse(res.state.body).error, 'outside-workspace')
 })
 
+// NOTE: these routes need a real directory inside the workspace, and the test
+// removes it when done. It MUST NOT be the shared `test/fixtures/` directory:
+// `rm -rf test/fixtures` also deletes the watermark suite's fixture GENERATOR
+// (`test/fixtures/make-fixtures.mjs`), which then makes that suite fail with a
+// confusing "module not found" instead of a test failure. Hence a private dir.
 await test('list finds the demo PDFs in the workspace', async () => {
   const res = fakeRes()
   // The studio workspace has no PDFs of its own; point at a real directory
   // inside it that the test itself creates.
   const { mkdir, writeFile, rm } = await import('node:fs/promises')
   const { join } = await import('node:path')
-  const dir = join(process.cwd(), 'test', 'fixtures')
+  const dir = join(process.cwd(), 'test', '.routes-scratch')
   await mkdir(dir, { recursive: true })
   await writeFile(join(dir, 'probe.pdf'), '%PDF-1.4\n%%EOF\n', 'utf8')
   const url = PDF_API_PREFIX + '/list?dir=' + encodeURIComponent(dir)
@@ -176,7 +181,7 @@ await test('page.png rejects a bad page number', async () => {
   const res = fakeRes()
   const { writeFile, mkdir, rm } = await import('node:fs/promises')
   const { join } = await import('node:path')
-  const dir = join(process.cwd(), 'test', 'fixtures')
+  const dir = join(process.cwd(), 'test', '.routes-scratch')
   await mkdir(dir, { recursive: true })
   await writeFile(join(dir, 'tiny.pdf'), '%PDF-1.4\n%%EOF\n')
   const url = PDF_API_PREFIX + '/page.png?page=0&path=' + encodeURIComponent(join(dir, 'tiny.pdf'))
@@ -190,7 +195,7 @@ await test('watermark add requires text or an image', async () => {
   const res = fakeRes()
   const { mkdir, writeFile, rm } = await import('node:fs/promises')
   const { join } = await import('node:path')
-  const dir = join(process.cwd(), 'test', 'fixtures')
+  const dir = join(process.cwd(), 'test', '.routes-scratch')
   await mkdir(dir, { recursive: true })
   const file = join(dir, 'wm-target.pdf')
   await writeFile(file, '%PDF-1.4\n%%EOF\n')
@@ -215,7 +220,7 @@ await test('protect requires a password to encrypt', async () => {
   const res = fakeRes()
   const { mkdir, writeFile, rm } = await import('node:fs/promises')
   const { join } = await import('node:path')
-  const dir = join(process.cwd(), 'test', 'fixtures')
+  const dir = join(process.cwd(), 'test', '.routes-scratch')
   await mkdir(dir, { recursive: true })
   const file = join(dir, 'protect-target.pdf')
   await writeFile(file, '%PDF-1.4\n%%EOF\n')
@@ -232,7 +237,7 @@ await test('encryption inspection reports the file state', async () => {
   const res = fakeRes()
   const { mkdir, writeFile, rm } = await import('node:fs/promises')
   const { join } = await import('node:path')
-  const dir = join(process.cwd(), 'test', 'fixtures')
+  const dir = join(process.cwd(), 'test', '.routes-scratch')
   await mkdir(dir, { recursive: true })
   const file = join(dir, 'plain.pdf')
   await writeFile(file, '%PDF-1.4\ntrailer\n<< /Size 1 >>\n%%EOF\n')

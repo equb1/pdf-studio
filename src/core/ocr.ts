@@ -30,11 +30,43 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { createCanvas } from '@napi-rs/canvas'
 import { deviceRectToPdf, deviceToPdf } from './coords.ts'
 import type { OcrPageResult, PdfRect, PixelRect, TextLine, TextRun } from './contracts.ts'
 
 const require = createRequire(import.meta.url)
+
+/** The slice of `@napi-rs/canvas` this module uses. */
+type CreateCanvas = (width: number, height: number) => {
+  getContext(type: '2d'): unknown
+  toBuffer(mime: 'image/png'): Buffer
+}
+
+let cachedCreateCanvas: CreateCanvas | undefined
+
+/**
+ * Load `@napi-rs/canvas` on first use.
+ *
+ * Deliberately NOT a static import: a module-scope import makes the failure of
+ * one optional native binding take down every consumer of this file — including
+ * the whole host plugin on a machine where the prebuilt binary cannot be loaded
+ * (macOS refuses a binary signed by a different team than the Node process). OCR
+ * is the only thing here that needs a rasteriser, so the requirement is enforced
+ * where it is actually used.
+ */
+function loadCreateCanvas(): CreateCanvas {
+  if (cachedCreateCanvas !== undefined) return cachedCreateCanvas
+  try {
+    const module = require('@napi-rs/canvas') as { createCanvas: CreateCanvas }
+    cachedCreateCanvas = module.createCanvas
+  } catch (error) {
+    throw new Error(
+      'OCR 需要 @napi-rs/canvas，但本机无法加载它的原生绑定：'
+      + `${(error as Error | undefined)?.message ?? String(error)}。`
+      + '请安装可用的 canvas 绑定，或不要对扫描页使用 OCR。',
+    )
+  }
+  return cachedCreateCanvas
+}
 
 /** Default language data. Shared, 44 MB, never copied — see `cacheMethod` below. */
 const DEFAULT_LANG_PATH = '/Users/Zhuanz/dsh-pdf-maker/assets/tessdata'
@@ -364,7 +396,7 @@ interface RenderedPage {
 async function renderPage(page: PdfPageLike, scale: number): Promise<RenderedPage> {
   const base = page.getViewport({ scale: 1 })
   const viewport = page.getViewport({ scale })
-  const canvas = createCanvas(viewport.width, viewport.height)
+  const canvas = loadCreateCanvas()(viewport.width, viewport.height)
   await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise
   return {
     png: canvas.toBuffer('image/png'),

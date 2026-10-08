@@ -29,6 +29,7 @@
  */
 
 import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { analyzeDocument, applyTextEdits, exportSearchable, inspectDocument, protectPdf, readEditableDocument, reportWatermarks, stampWatermark, stripWatermarks, lineSummary } from './engine.ts'
 
@@ -374,6 +375,11 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         return { text: '当前宿主没有提供图片附件服务，无法在会话中显示预览。' }
       }
       const info = await inspectDocument(source)
+      if (!info.readable) {
+        return {
+          text: `${basename(source)} 已加密，且没有提供密码，无法渲染预览。请先用 pdf_protect action=decrypt 解除保护。`,
+        }
+      }
       const requested = Array.isArray(args.pages)
         ? (args.pages as unknown[]).map(Number).filter(n => Number.isFinite(n) && n >= 1 && n <= info.pages)
         : [1]
@@ -413,7 +419,10 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       const source = resolveInput(args)
       const info = await inspectDocument(source)
       const lines: string[] = [
-        `${basename(source)}：${info.pages} 页${info.encrypted ? '，已加密' : ''}`,
+        info.readable
+          ? `${basename(source)}：${info.pages} 页${info.encrypted ? '，已加密' : ''}`
+          : `${basename(source)}：已加密，未提供密码时页数不可读`,
+        ...info.notes,
       ]
       const first = info.sizes[0]
       if (first !== undefined) {
@@ -588,8 +597,10 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
   const watermark: ToolDefinition = {
     name: 'pdf_watermark',
     description:
-      '水印三合一。action=add 添加文字水印；action=scan 查找已有水印（返回置信度与依据，不改文件）；'
+      '水印三合一。action=add 添加文字或图片水印；action=scan 查找已有水印（返回置信度与依据，不改文件）；'
       + 'action=remove 移除能确认的水印。'
+      + '默认 render=text（真实文字，可被搜索/复制）；若水印不应进入文字层（例如内部资料、机密标记），'
+      + '用 render=outline 把同样字形画成矢量路径，外观一致但无法被文本提取。'
       + '注意：栅格化进页面图片的水印、或当正文绘制的水印，无法可靠移除，scan 会说明原因。',
     parameters: {
       path: { type: 'string', required: true, description: 'PDF 路径。' },
@@ -599,14 +610,37 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         enum: ['add', 'scan', 'remove'],
         description: 'add 添加；scan 只查找不改动；remove 移除高置信度水印。',
       },
-      text: { type: 'string', description: 'action=add 时的水印文字。' },
+      text: { type: 'string', description: 'action=add 时的水印文字（与 imagePath 二选一）。' },
+      imagePath: { type: 'string', description: 'action=add 时用图片作水印（PNG/JPEG 路径，与 text 二选一）。' },
+      render: {
+        type: 'string',
+        enum: ['text', 'outline'],
+        description: 'text（默认）画真实文字；outline 画矢量轮廓 —— 外观相同但不进入文字层，且不嵌入字体。',
+      },
       placement: {
         type: 'string',
         enum: ['tile', 'center', 'corner'],
         description: '位置：tile 斜向平铺（默认）、center 居中、corner 角落。',
       },
+      corner: {
+        type: 'string',
+        enum: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+        description: 'placement=corner 时的角，默认 bottom-right。',
+      },
+      rotation: { type: 'number', description: '旋转角度（逆时针），默认 tile 45、其它 0。' },
       opacity: { type: 'number', description: '透明度 0..1，默认 0.15。' },
       fontSize: { type: 'number', description: '字号，默认 48。' },
+      color: { type: 'string', description: '颜色 #rrggbb，默认 #d92626。' },
+      margin: { type: 'number', description: '边距（角标位置与平铺留白），默认 24。' },
+      artifact: {
+        type: 'boolean',
+        description: '是否把水印标记为 /Artifact（默认 true）：声明它是装饰而非正文，辅助阅读与 PDF/UA 会跳过它。',
+      },
+      pages: {
+        type: 'array',
+        items: { type: 'integer' },
+        description: '要加水印的页码（从 1 开始），默认全部；越界页号会被忽略并提示。',
+      },
       output: { type: 'string', description: 'add / remove 的输出路径。' },
     },
     output: TEXT_OUTPUT,
@@ -654,17 +688,30 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
 
       if (action !== 'add') throw new Error(`未知 action：${action}`)
       const text = optionalString(args, 'text')
-      if (text === undefined) throw new Error('action=add 需要 text 参数')
+      const imagePath = optionalString(args, 'imagePath')
+      if (text === undefined && imagePath === undefined) {
+        throw new Error('action=add 需要 text 或 imagePath 参数')
+      }
+      const image = imagePath === undefined ? undefined : new Uint8Array(await readFile(imagePath))
       const output = resolveOutput(source, args, '-watermarked', options.workspaceRoot)
       const result = await stampWatermark(source, output, {
-        text,
+        ...(text === undefined ? {} : { text }),
+        ...(image === undefined ? {} : { image }),
         ...(typeof args.placement === 'string' ? { placement: args.placement as never } : {}),
+        ...(typeof args.render === 'string' ? { render: args.render as never } : {}),
+        ...(typeof args.corner === 'string' ? { corner: args.corner as never } : {}),
+        ...(typeof args.rotation === 'number' ? { rotation: args.rotation } : {}),
         ...(typeof args.opacity === 'number' ? { opacity: args.opacity } : {}),
         ...(typeof args.fontSize === 'number' ? { fontSize: args.fontSize } : {}),
+        ...(typeof args.color === 'string' ? { color: args.color } : {}),
+        ...(typeof args.margin === 'number' ? { margin: args.margin } : {}),
+        ...(typeof args.artifact === 'boolean' ? { artifact: args.artifact } : {}),
+        ...(Array.isArray(args.pages) ? { pages: (args.pages as unknown[]).map(Number) } : {}),
       })
+      const shown = result.textDrawn === '' ? `${basename(imagePath ?? '')}（图片）` : result.textDrawn
       const lines = [
         `已生成：${result.outputPath}`,
-        `水印「${result.textDrawn}」已加到 ${result.pages} 页。`,
+        `水印「${shown}」已加到 ${result.pages} 页（${result.render === 'outline' ? '矢量轮廓，不进入文字层' : result.render === 'image' ? '图片' : '文字层文字'}${result.artifact ? '，已标记 /Artifact' : ''}）。`,
       ]
       if (result.droppedChars.length > 0) {
         lines.push(`以下字符所选字体无法编码，已丢弃：${result.droppedChars.join(' ')}`)
@@ -710,8 +757,11 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         const info = await inspectDocument(source)
         const verdict = !info.encrypted
           ? '未加密：任何人都能打开和修改。'
-          : '已加密。'
-        return { text: `${basename(source)}：${verdict}共 ${info.pages} 页。` }
+          : info.opensWithoutPassword
+            ? '已加密，但无需密码即可打开（权限受 /Encrypt 约束）。'
+            : '已加密，需要密码才能打开。'
+        const pages = info.readable ? `共 ${info.pages} 页。` : '页数不可读，需要密码。'
+        return { text: [`${basename(source)}：${verdict}${pages}`, ...info.notes].join('\n') }
       }
 
       const password = optionalString(args, 'password')

@@ -16,7 +16,8 @@
  * @module dsh-pdf-studio/host/engine
  */
 
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { PDFDocument } from 'pdf-lib'
 import { openPdf, pageSize, type PdfDoc } from '../core/pdf.ts'
 import {
@@ -275,7 +276,7 @@ export async function applyTextEdits(
   }
 
   const bytes = await doc.save()
-  await writeFile(outputPath, bytes)
+  await writeOutput(outputPath, bytes)
   return { outputPath, pages: doc.getPageCount(), applied, notes }
 }
 
@@ -330,7 +331,7 @@ export async function protectPdf(
     )
   }
 
-  await writeFile(outputPath, run.bytes)
+  await writeOutput(outputPath, run.bytes)
   const state = await inspectEncryption(run.bytes)
 
   return {
@@ -342,6 +343,18 @@ export async function protectPdf(
   }
 }
 
+
+/**
+ * Write output bytes, creating the destination directory when it is missing.
+ *
+ * A relative `output` is resolved against the workspace root, which exists in
+ * the desktop app but not necessarily in a fresh checkout or a test run — and
+ * `writeFile` then fails with a bare ENOENT that reads like a bug in the caller.
+ */
+async function writeOutput(target: string, bytes: Uint8Array): Promise<void> {
+  await mkdir(dirname(target), { recursive: true })
+  await writeFile(target, bytes)
+}
 
 /* -------------------------------------------------------------------------- */
 /* watermarks                                                                 */
@@ -372,15 +385,25 @@ export async function stampWatermark(
   sourcePath: string,
   outputPath: string,
   spec: WatermarkSpec,
-): Promise<{ outputPath: string; pages: number; textDrawn: string; droppedChars: string[]; notes: string[] }> {
+): Promise<{
+  outputPath: string
+  pages: number
+  textDrawn: string
+  droppedChars: string[]
+  render: 'text' | 'outline' | 'image'
+  artifact: boolean
+  notes: string[]
+}> {
   const bytes = new Uint8Array(await readFile(sourcePath))
   const { bytes: out, result } = await addWatermark(bytes, spec)
-  await writeFile(outputPath, out)
+  await writeOutput(outputPath, out)
   return {
     outputPath,
     pages: result.pages,
     textDrawn: result.textDrawn,
     droppedChars: result.droppedChars,
+    render: result.render,
+    artifact: result.artifact,
     notes: result.notes,
   }
 }
@@ -415,7 +438,7 @@ export async function stripWatermarks(
   if (dryRun || result.removed.length === 0) {
     return { dryRun: true, removed: result.removed, skipped: result.skipped, notes: result.notes }
   }
-  await writeFile(outputPath, result.bytes)
+  await writeOutput(outputPath, result.bytes)
   return {
     dryRun: false,
     outputPath,
@@ -444,6 +467,16 @@ export interface DocumentInfo {
   sizes: PageInfo[]
   /** Whether the document carries an /Encrypt dictionary. */
   encrypted: boolean
+  /** Whether it opens with no password supplied. */
+  opensWithoutPassword: boolean
+  /**
+   * Whether the page structure could be read at all. False for a file whose
+   * objects are encrypted with a user password: the `/Encrypt` flag is a fact in
+   * the trailer, but the pages behind it are not readable, and saying "0 pages"
+   * without saying why would look like a damaged file.
+   */
+  readable: boolean
+  notes: string[]
 }
 
 /**
@@ -456,22 +489,47 @@ export interface DocumentInfo {
  */
 export async function inspectDocument(sourcePath: string): Promise<DocumentInfo> {
   const bytes = new Uint8Array(await readFile(sourcePath))
+  const { hasEncryptDictionary, inspectEncryption } = await import('../core/qpdf.ts')
+  const encrypted = hasEncryptDictionary(bytes)
+  const notes: string[] = []
+
   // `ignoreEncryption` is required, not an optimisation: this function's job
   // includes REPORTING that a file is encrypted, and pdf-lib refuses to parse an
-  // encrypted document otherwise. Without it, inspecting a protected file threw
-  // instead of describing it — the one case the caller most needs an answer for.
-  // Nothing here decrypts anything; it reads page geometry and the /Encrypt flag.
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
-  const pages = doc.getPages()
-  const sizes: PageInfo[] = pages.map((page, index) => {
-    const { width, height } = page.getSize()
-    return { page: index + 1, width, height }
-  })
-  const { hasEncryptDictionary } = await import('../core/qpdf.ts')
+  // encrypted document otherwise. It is still not enough for a file encrypted
+  // with a user password — pdf-lib then fails on the objects themselves — so the
+  // read is guarded and the failure is reported as a fact rather than thrown.
+  let pages: PageInfo[] = []
+  let readable = true
+  try {
+    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
+    pages = doc.getPages().map((page, index) => {
+      const { width, height } = page.getSize()
+      return { page: index + 1, width, height }
+    })
+  } catch (error) {
+    readable = false
+    pages = []
+    if (encrypted) {
+      notes.push('文件已加密且未提供密码，页面结构不可读：页数与尺寸无法在未解密的情况下给出。')
+    } else {
+      notes.push(`无法解析页面结构：${(error as Error | undefined)?.message ?? String(error)}`)
+    }
+  }
+
+  const opensWithoutPassword = encrypted ? (await inspectEncryption(bytes)).opensWithoutPassword : true
+  if (encrypted) {
+    notes.push(opensWithoutPassword
+      ? '已加密，但无需密码即可打开（权限受 /Encrypt 约束）。'
+      : '已加密，需要密码才能打开。')
+  }
+
   return {
     sourcePath,
     pages: pages.length,
-    sizes,
-    encrypted: hasEncryptDictionary(bytes),
+    sizes: pages,
+    encrypted,
+    opensWithoutPassword,
+    readable,
+    notes,
   }
 }

@@ -51,6 +51,31 @@ check(
   !hasEncryptDictionary(new Uint8Array(Buffer.from('%PDF-1.7\n/Encrypt not a trailer\n%%EOF\n', 'latin1'))),
 )
 
+// The keys of a cross-reference stream dictionary are unordered and it may hold
+// nested dictionaries, so `/Encrypt` can legitimately come AFTER `/Type /XRef`.
+// A reader that only looked before that key reported an encrypted file as
+// unprotected — and qpdf's own encrypt output has exactly this shape.
+{
+  const xrefStream = (encryptEntry) => new Uint8Array(Buffer.from(
+    '%PDF-1.7\n'
+    + '9 0 obj\n'
+    + `<< /Type /XRef /Length 42 /Filter /FlateDecode /DecodeParms << /Columns 4 /Predictor 12 >> `
+    + `/W [ 1 2 1 ] /Info 4 0 R /Root 1 0 R /Size 10 ${encryptEntry}>>\n`
+    + 'stream\nx\nendstream\nendobj\nstartxref\n9\n%%EOF\n',
+    'latin1',
+  ))
+
+  check('an /Encrypt entry written after /Type /XRef is detected',
+    hasEncryptDictionary(xrefStream('/Encrypt 8 0 R ')) === true)
+  check('an xref stream without /Encrypt is not reported as encrypted',
+    hasEncryptDictionary(xrefStream('')) === false)
+  check('an /Encrypt entry written before /Type /XRef is also detected',
+    hasEncryptDictionary(new Uint8Array(Buffer.from(
+      '%PDF-1.7\n9 0 obj\n<< /Encrypt 8 0 R /Type /XRef /Size 10 >>\nstream\nx\nendstream\nendobj\nstartxref\n9\n%%EOF\n',
+      'latin1',
+    ))) === true)
+}
+
 {
   const before = await inspectEncryption(original)
   check('a plain PDF reports as unprotected', before.encrypted === false && before.opensWithoutPassword === true,

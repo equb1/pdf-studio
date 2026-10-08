@@ -68,6 +68,26 @@ export interface WatermarkSpec {
   /** Image bytes (PNG/JPEG) to draw instead of text. */
   image?: Uint8Array
   placement?: WatermarkPlacement
+  /**
+   * How the mark is written into the file.
+   *
+   * `text` (the default) paints real glyphs: searchable, copyable, and it needs
+   * an embedded font. `outline` paints the very same glyph shapes as filled
+   * paths: visually identical, but it contributes nothing to the text layer, so
+   * the mark cannot be found by search, lifted by copy/paste, or mistaken for
+   * document content by an extractor. It also drops the font embedding, which
+   * makes the output smaller rather than larger.
+   */
+  render?: 'text' | 'outline'
+  /**
+   * Wrap the invocation in an `/Artifact` marked-content block (default true).
+   *
+   * A watermark is decoration, not content: tagging it as an artifact is what
+   * keeps assistive technology and PDF/UA checkers from reading it as body
+   * text. This is orthogonal to `render` — `outline` keeps it out of the text
+   * layer, `artifact` keeps it out of the document's logical content.
+   */
+  artifact?: boolean
   /** Corner for `placement: 'corner'`; defaults to `'bottom-right'`. */
   corner?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
   /** Rotation in degrees, counter-clockwise. Defaults to 45 for tile, 0 otherwise. */
@@ -95,6 +115,10 @@ export interface AddWatermarkResult {
   textDrawn: string
   /** Characters dropped because the chosen font could not encode them. */
   droppedChars: string[]
+  /** Which painting mode was used. */
+  render: 'text' | 'outline' | 'image'
+  /** Whether the invocation was wrapped in an `/Artifact` block. */
+  artifact: boolean
   notes: string[]
 }
 
@@ -122,144 +146,362 @@ function pdfLiteral(text: string): string {
   return '(' + text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)') + ')'
 }
 
+/**
+ * Split text into what a standard (Helvetica) font can draw and what it cannot.
+ *
+ * Exported because the reporting of dropped characters has been wrong once
+ * already — the predicate was inverted, so the characters named as lost were the
+ * survivors — and a pure function is the only shape of this logic that a test can
+ * pin down without a machine that lacks a CJK font.
+ */
+export function splitDrawableText(text: string): { drawable: string; dropped: string[] } {
+  const dropped: string[] = []
+  for (const char of text) if (!/[\x20-\x7e]/.test(char)) dropped.push(char)
+  return { drawable: text.replace(/[^\x20-\x7e]/g, ''), dropped }
+}
+
 /** Identity tag written into the Form XObject so a later scan can recognise it. */
 export const WATERMARK_MARKER = 'dsh-pdf-studio-watermark'
 
-/**
- * Build the content-stream body of a watermark Form XObject.
- *
- * The XObject's user space is the page's, so the body is written in page
- * coordinates directly. Rotation uses the standard `cm` composition with a
- * translation to the pivot, which is what keeps a rotated mark centred rather
- * than swinging off the page.
- */
-function buildMarkBody(spec: {
-  /** Pre-encoded glyph operand for the chosen font (NOT the literal text). */
-  glyphOperand?: string
-  /** Advance width of the drawn text in text units, used for placement only. */
-  textWidthUnits?: number
-  imageName?: string
-  imageWidth?: number
-  imageHeight?: number
-  pageWidth: number
-  pageHeight: number
+/** Resource name of the inner mark inside the watermark XObject. */
+const MARK_RESOURCE_NAME = 'WMMark'
+/** Resource name of the image inside the inner mark. */
+const IMAGE_RESOURCE_NAME = 'WMImg'
+/** Resource name of the font inside the inner mark. */
+const FONT_RESOURCE_NAME = 'WMFont'
+
+/** The bounding box of a `width` × `height` box turned by `degrees`. */
+function rotatedAabb(width: number, height: number, degrees: number): { width: number; height: number } {
+  if (degrees === 0) return { width, height }
+  const radians = (degrees * Math.PI) / 180
+  const absCos = Math.abs(Math.cos(radians))
+  const absSin = Math.abs(Math.sin(radians))
+  return {
+    width: width * absCos + height * absSin,
+    height: width * absSin + height * absCos,
+  }
+}
+
+/** The visible region of a page, in page coordinates. */
+function pageRegion(page: {
+  getCropBox(): { x: number; y: number; width: number; height: number }
+}): { x: number; y: number; width: number; height: number } {
+  // `getCropBox` falls back to the MediaBox when no CropBox is declared, so this
+  // is the visible area either way. Placement used to be computed from the
+  // MediaBox, which puts a "centred" mark off-centre on any page whose CropBox is
+  // inset — a common shape for print-ready PDFs.
+  const box = page.getCropBox()
+  return { x: box.x, y: box.y, width: box.width, height: box.height }
+}
+
+/** Everything the placement maths needs to know about one page. */
+interface MarkGeometry {
+  regionX: number
+  regionY: number
+  regionWidth: number
+  regionHeight: number
   placement: WatermarkPlacement
   corner: NonNullable<WatermarkSpec['corner']>
   rotation: number
-  opacity: number
-  color: { r: number; g: number; b: number }
   fontSize: number
   margin: number
-  fontRef: string
-}): string {
-  const ops: string[] = []
-  // A graphics-state block so the mark cannot leak settings into page content.
-  ops.push('q')
-  // Constant alpha, applied non-stroking (this build's marks are filled text).
-  ops.push(`/GSW gs`)
+}
 
-  const place = (
-    drawAt: (localWidth: number, localHeight: number) => string,
-    localWidth: number,
-    localHeight: number,
-    tx: number,
-    ty: number,
-  ): void => {
+/**
+ * Centres of every tile, chosen so that no rotated mark crosses a page edge.
+ *
+ * The grid used to start a full stride OUTSIDE the page and let the Form's BBox
+ * cut off whatever hung over, which sliced glyphs in half along all four edges
+ * (and left clipped fragments like `部资料` in the text layer). Here the mark's
+ * own rotated box is fitted INSIDE the visible region, and the columns and rows
+ * are spread evenly across the space that remains: every tile is complete, and
+ * the page is still covered edge to edge.
+ */
+function tileCentres(
+  geometry: MarkGeometry,
+  markWidth: number,
+  markHeight: number,
+): Array<[number, number]> {
+  const box = rotatedAabb(markWidth, markHeight, geometry.rotation)
+  const guard = Math.max(0, geometry.margin)
+  const availableWidth = geometry.regionWidth - box.width - guard * 2
+  const availableHeight = geometry.regionHeight - box.height - guard * 2
+
+  if (availableWidth < 0 || availableHeight < 0) {
+    // The mark does not fit even once (an oversized font on a small page): a
+    // single centred mark is the only placement that is not clipped twice over.
+    return [[geometry.regionX + geometry.regionWidth / 2, geometry.regionY + geometry.regionHeight / 2]]
+  }
+
+  const strideX = Math.max(120, geometry.fontSize * 6)
+  const strideY = Math.max(120, geometry.fontSize * 4)
+  const columns = Math.max(1, Math.floor(availableWidth / strideX) + 1)
+  const rows = Math.max(1, Math.floor(availableHeight / strideY) + 1)
+  const stepX = columns > 1 ? availableWidth / (columns - 1) : 0
+  const stepY = rows > 1 ? availableHeight / (rows - 1) : 0
+
+  const centres: Array<[number, number]> = []
+  for (let row = 0; row < rows; row += 1) {
+    const y = geometry.regionY + guard + box.height / 2 + row * stepY
+    // Odd rows are offset by half a step for the classic diagonal look; that row
+    // then carries one tile fewer, so it still ends inside the page.
+    const offset = row % 2 === 1 && columns > 1 ? stepX / 2 : 0
+    const count = offset === 0 ? columns : columns - 1
+    for (let column = 0; column < count; column += 1) {
+      centres.push([geometry.regionX + guard + box.width / 2 + offset + column * stepX, y])
+    }
+  }
+  return centres
+}
+
+/** Top-left corner of a single (non-tiled) mark, kept inside the page. */
+function anchorFor(geometry: MarkGeometry, width: number, height: number): [number, number] {
+  const { regionX, regionY, regionWidth, regionHeight, placement, corner, margin } = geometry
+  let x: number
+  let y: number
+  if (placement === 'center') {
+    x = regionX + (regionWidth - width) / 2
+    y = regionY + (regionHeight - height) / 2
+  } else {
+    switch (corner) {
+      case 'top-left':
+        x = regionX + margin
+        y = regionY + regionHeight - height - margin
+        break
+      case 'top-right':
+        x = regionX + regionWidth - width - margin
+        y = regionY + regionHeight - height - margin
+        break
+      case 'bottom-left':
+        x = regionX + margin
+        y = regionY + margin
+        break
+      default:
+        x = regionX + regionWidth - width - margin
+        y = regionY + margin
+        break
+    }
+  }
+  // The mark only needs rescuing when it genuinely cannot respect the margin on
+  // both sides. In that case centre it (equal overflow on both sides) — clamping
+  // it into the margin range instead would silently cancel the centring, i.e.
+  // trade the MediaBox bug for an off-centre bug.
+  const fits = width + margin * 2 <= regionWidth && height + margin * 2 <= regionHeight
+  if (fits) return [x, y]
+  return [
+    regionX + (regionWidth - width) / 2,
+    regionY + (regionHeight - height) / 2,
+  ]
+}
+
+/**
+ * Build the watermark Form XObject's body for one page geometry.
+ *
+ * The body draws nothing of its own: it invokes the shared inner mark once per
+ * placement. That indirection is what keeps an outlined mark cheap — the glyph
+ * outlines are stored in the file once and merely transformed per tile, instead
+ * of being repeated for every tile.
+ */
+function buildWatermarkBody(
+  geometry: MarkGeometry,
+  markWidth: number,
+  markHeight: number,
+  markResource: string,
+): string {
+  const ops: string[] = ['q', '/GSW gs']
+
+  const place = (centreX: number, centreY: number): void => {
     ops.push('q')
-    ops.push(`1 0 0 1 ${n(tx)} ${n(ty)} cm`)
-    if (spec.rotation !== 0) {
-      const radians = (spec.rotation * Math.PI) / 180
+    ops.push(`1 0 0 1 ${n(centreX - markWidth / 2)} ${n(centreY - markHeight / 2)} cm`)
+    if (geometry.rotation !== 0) {
+      const radians = (geometry.rotation * Math.PI) / 180
       const cos = Math.cos(radians)
       const sin = Math.sin(radians)
-      // Rotate about the mark's own centre so it stays where it was placed.
-      ops.push(`1 0 0 1 ${n(localWidth / 2)} ${n(localHeight / 2)} cm`)
+      // Rotate about the mark's own centre, so it stays where it was placed.
+      ops.push(`1 0 0 1 ${n(markWidth / 2)} ${n(markHeight / 2)} cm`)
       ops.push(`${n(cos)} ${n(sin)} ${n(-sin)} ${n(cos)} 0 0 cm`)
-      ops.push(`1 0 0 1 ${n(-localWidth / 2)} ${n(-localHeight / 2)} cm`)
+      ops.push(`1 0 0 1 ${n(-markWidth / 2)} ${n(-markHeight / 2)} cm`)
     }
-    ops.push(drawAt(localWidth, localHeight))
+    ops.push(`/${markResource} Do`)
     ops.push('Q')
   }
 
-  if (spec.imageName !== undefined) {
-    const imgW = spec.imageWidth ?? 100
-    const imgH = spec.imageHeight ?? 100
-    const draw = (): string => `/${spec.imageName} Do`
-    const [tx, ty] = anchorFor(spec, imgW, imgH)
-    place(draw, imgW, imgH, tx, ty)
+  if (geometry.placement === 'tile') {
+    for (const [centreX, centreY] of tileCentres(geometry, markWidth, markHeight)) {
+      place(centreX, centreY)
+    }
   } else {
-    // The operand MUST be the font's encoded glyph string, not the text. A
-    // subset font renumbers its glyphs, so writing the literal characters paints
-    // whatever glyphs happen to sit at those codes — which is nothing legible.
-    const glyphs = spec.glyphOperand ?? '<>'
-    const textWidth = spec.textWidthUnits ?? spec.fontSize
-    const textHeight = spec.fontSize
-    const draw = (): string =>
-      `BT /${spec.fontRef} ${n(spec.fontSize)} Tf ${n(spec.color.r)} ${n(spec.color.g)} ${n(spec.color.b)} rg `
-      + `1 0 0 1 0 ${n(textHeight * 0.2)} Tm ${glyphs} Tj ET`
-    const [tx, ty] = anchorFor(spec, textWidth, textHeight)
-    place(draw, textWidth, textHeight, tx, ty)
+    const [x, y] = anchorFor(geometry, markWidth, markHeight)
+    place(x + markWidth / 2, y + markHeight / 2)
   }
 
   ops.push('Q')
   return ops.join('\n')
 }
 
+/** A glyph outline command, as fontkit reports it. */
+interface OutlineCommand {
+  command: string
+  args: number[]
+}
+
+/** The slice of a fontkit font that outline drawing needs. */
+interface OutlineFont {
+  unitsPerEm?: number
+  layout(text: string): {
+    glyphs: Array<{ path?: { commands?: OutlineCommand[] } }>
+    positions: Array<{ xAdvance: number; xOffset?: number }>
+  }
+}
+
+/** Resolve a fontkit font object for outline drawing, or `undefined`. */
+function createOutlineFont(adapter: Record<string, unknown>, bytes: Uint8Array): OutlineFont | undefined {
+  const create = adapter.create as ((data: Uint8Array) => unknown) | undefined
+  if (typeof create !== 'function') return undefined
+  try {
+    const font = create(bytes) as OutlineFont | undefined
+    return font !== undefined && typeof font.layout === 'function' ? font : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
- * Compute the mark's placement.
+ * Turn text into filled path operators.
  *
- * `tile` is handled by the caller (it repeats this anchor); `center` and
- * `corner` differ only in where the anchor sits.
+ * This is what makes `render: 'outline'` possible: the glyphs come from the same
+ * font `text` mode would embed, but they are written as Bézier curves, so
+ * nothing about the mark is text — no search hit, no copy/paste, nothing for an
+ * extractor to mistake for content. TrueType outlines are quadratic and PDF has
+ * no quadratic operator, so each curve is raised to its exact cubic equivalent.
  */
-function anchorFor(
-  spec: {
-    pageWidth: number
-    pageHeight: number
-    placement: WatermarkPlacement
-    corner: NonNullable<WatermarkSpec['corner']>
-    margin: number
-  },
-  width: number,
-  height: number,
-  text?: string,
-): [number, number] {
-  const { pageWidth, pageHeight, placement, corner, margin } = spec
-  void text
-  if (placement === 'center') {
-    return [(pageWidth - width) / 2, (pageHeight - height) / 2]
-  }
-  if (placement === 'corner') {
-    switch (corner) {
-      case 'top-left':
-        return [margin, pageHeight - height - margin]
-      case 'top-right':
-        return [pageWidth - width - margin, pageHeight - height - margin]
-      case 'bottom-left':
-        return [margin, margin]
-      default:
-        return [pageWidth - width - margin, margin]
+function outlineOpsFor(
+  text: string,
+  font: OutlineFont,
+  fontSize: number,
+  color: { r: number; g: number; b: number },
+): { body: string; width: number; height: number } {
+  const unitsPerEm = font.unitsPerEm === undefined || font.unitsPerEm === 0 ? 1000 : font.unitsPerEm
+  const scale = fontSize / unitsPerEm
+  // The same baseline lift `text` mode applies, so switching modes does not move
+  // the mark.
+  const baseline = fontSize * 0.2
+  const parts: string[] = [`${n(color.r)} ${n(color.g)} ${n(color.b)} rg`]
+  const run = font.layout(text)
+  let pen = 0
+
+  run.glyphs.forEach((glyph, index) => {
+    const position = run.positions[index]
+    const x0 = pen + (position?.xOffset ?? 0)
+    const point = (x: number, y: number): string => `${n((x0 + x) * scale)} ${n(y * scale + baseline)}`
+    let currentX = 0
+    let currentY = 0
+    for (const command of glyph.path?.commands ?? []) {
+      const args = command.args
+      switch (command.command) {
+        case 'moveTo':
+          parts.push(`${point(args[0], args[1])} m`)
+          currentX = args[0]
+          currentY = args[1]
+          break
+        case 'lineTo':
+          parts.push(`${point(args[0], args[1])} l`)
+          currentX = args[0]
+          currentY = args[1]
+          break
+        case 'quadraticCurveTo': {
+          // p0 + 2/3 (q - p0) and p2 + 2/3 (q - p2) is the exact cubic form of a
+          // quadratic from p0 through control q to p2.
+          const c1x = currentX + (2 / 3) * (args[0] - currentX)
+          const c1y = currentY + (2 / 3) * (args[1] - currentY)
+          const c2x = args[2] + (2 / 3) * (args[0] - args[2])
+          const c2y = args[3] + (2 / 3) * (args[1] - args[3])
+          parts.push(`${point(c1x, c1y)} ${point(c2x, c2y)} ${point(args[2], args[3])} c`)
+          currentX = args[2]
+          currentY = args[3]
+          break
+        }
+        case 'bezierCurveTo':
+          parts.push(`${point(args[0], args[1])} ${point(args[2], args[3])} ${point(args[4], args[5])} c`)
+          currentX = args[4]
+          currentY = args[5]
+          break
+        case 'closePath':
+          parts.push('h')
+          break
+        default:
+          break
+      }
     }
+    pen += position?.xAdvance ?? 0
+  })
+
+  // One non-zero fill for every contour: TrueType winding is already non-zero.
+  parts.push('f')
+  return { body: parts.join('\n'), width: pen * scale, height: fontSize }
+}
+
+/** Advance width of `text`, falling back to a per-character estimate. */
+function drawnWidth(
+  font: { widthOfTextAtSize(text: string, size: number): number },
+  text: string,
+  fontSize: number,
+): number {
+  try {
+    const width = font.widthOfTextAtSize(text, fontSize)
+    if (Number.isFinite(width) && width > 0) return width
+  } catch {
+    // Fall through to the estimate.
   }
-  // 'tile' anchors the first tile; the caller repeats with a fixed stride.
-  return [margin, margin]
+  let units = 0
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    const wide = (code >= 0x1100 && code <= 0x115f)
+      || (code >= 0x2e80 && code <= 0xa4cf)
+      || (code >= 0xff00 && code <= 0xff60)
+    units += wide ? 1 : 0.5
+  }
+  return units * fontSize
 }
 
 /**
  * Stamp a watermark onto a document's pages.
  *
- * The mark is ONE Form XObject, registered once and invoked once per page. That
- * keeps the file small, keeps the mark's graphics state isolated by construction
- * (an XObject body is its own `q`/`Q` scope), and — the reason that matters most
- * here — gives a later removal a single operator to delete per page instead of a
- * pattern to guess at.
+ * The mark is built in two layers, and that split is what makes it both cheap
+ * and clean:
+ *
+ *   - an **inner mark** XObject holds the drawable content exactly once — a glyph
+ *     run, a set of glyph outlines, or an image;
+ *   - an **outer watermark** XObject, one per distinct page geometry, places that
+ *     inner mark wherever the placement asks and carries the identity tag a later
+ *     removal matches on.
+ *
+ * Nothing existing is rewritten: each page only gains one `Do` invocation in a
+ * new content stream. The page's own streams are referenced, never copied —
+ * copying them is what used to double the document's content on every run.
  */
 export async function addWatermark(
   sourceBytes: Uint8Array,
   spec: WatermarkSpec,
 ): Promise<{ bytes: Uint8Array; result: AddWatermarkResult }> {
-  const doc = await PDFDocument.load(sourceBytes)
+  let doc: PDFDocument
+  try {
+    // `updateMetadata: false` keeps the SOURCE's /ModDate and /Producer. pdf-lib
+    // otherwise restamps /ModDate with the current time on every save, which makes
+    // two runs over the same input produce different bytes — and makes content
+    // hashes useless for verifying that a stamping run changed only the mark.
+    doc = await PDFDocument.load(sourceBytes, { updateMetadata: false })
+  } catch (error) {
+    if (/encrypt/i.test(String((error as Error | undefined)?.message ?? ''))) {
+      throw new Error(
+        '这份 PDF 已加密，没有密码就无法加水印。请先用 pdf_protect action=decrypt 解除保护，或改用已解密的副本。',
+      )
+    }
+    throw error
+  }
+
   const notes: string[] = []
   const droppedChars: string[] = []
-
   const placement = spec.placement ?? 'tile'
   const rotation = spec.rotation ?? (placement === 'tile' ? 45 : 0)
   const opacity = Math.min(1, Math.max(0, spec.opacity ?? 0.15))
@@ -267,185 +509,221 @@ export async function addWatermark(
   const fontSize = spec.fontSize ?? 48
   const margin = spec.margin ?? 24
   const corner = spec.corner ?? 'bottom-right'
+  const artifact = spec.artifact ?? true
 
-  // ── the mark's drawable contents ─────────────────────────────────────────
+  // ── the inner mark: what is drawn, independent of page geometry ───────────
+  const markOps: string[] = []
+  let markFont: { name: string; ref: unknown } | undefined
+  let markImage: { name: string; ref: unknown } | undefined
+  let markWidth = fontSize
+  let markHeight = fontSize * 1.15
   let textDrawn = ''
-  let fontRef = ''
-  let glyphOperand: string | undefined
-  let fontObjectRef: unknown
-  let textWidthUnits: number | undefined
-  let imageName: string | undefined
-  let imageWidth: number | undefined
-  let imageHeight: number | undefined
-  let imageObjectRef: unknown
+  let effectiveRender: AddWatermarkResult['render'] = spec.render ?? 'text'
 
   if (spec.image !== undefined) {
     const isPng = spec.image[0] === 0x89 && spec.image[1] === 0x50
     const embedded = isPng ? await doc.embedPng(spec.image) : await doc.embedJpg(spec.image)
-    const ref = doc.context.register(embedded.ref === undefined ? embedded : embedded.ref)
-    imageName = 'WMImg'
-    imageWidth = embedded.width
-    imageHeight = embedded.height
-    void ref
+    // NOT `void ref`: the image object has to end up in the inner mark's
+    // /XObject resources. Dropping it there — as this code used to — emitted a
+    // `/WMImg Do` that resolved to nothing and then reported success for a blank
+    // mark, which is the worst possible outcome for a stamping tool.
+    markImage = { name: IMAGE_RESOURCE_NAME, ref: embedded.ref }
+    markOps.push(
+      'q',
+      `${n(embedded.width)} 0 0 ${n(embedded.height)} 0 0 cm`,
+      `/${IMAGE_RESOURCE_NAME} Do`,
+      'Q',
+    )
+    markWidth = embedded.width
+    markHeight = embedded.height
+    effectiveRender = 'image'
+    notes.push('图片水印：按原始像素尺寸绘制，未做缩放')
   } else {
     const text = spec.text ?? 'WATERMARK'
-    const loaded = await resolveFontForText(text, spec.fontPath)
-    if (loaded !== null) {
-      const fontkit = await loadFontkitAdapter()
-      if (fontkit !== null) doc.registerFontkit(fontkit)
-      const font = await doc.embedFont(loaded.bytes, { subset: true })
-      fontRef = font.name
-      fontObjectRef = font.ref
-      // `encodeText` returns the font's OWN glyph codes for the string. That is
-      // the only usable operand for this subset.
-      const encoded = font.encodeText(text).toString()
-      glyphOperand = encoded
-      textDrawn = text
-      // Advance width estimate for placement: CJK is full-width, latin ~0.5em.
-      let units = 0
-      for (const char of text) {
-        const code = char.codePointAt(0) ?? 0
-        const wide = (code >= 0x1100 && code <= 0x115f)
-          || (code >= 0x2e80 && code <= 0xa4cf)
-          || (code >= 0xff00 && code <= 0xff60)
-        units += wide ? 1 : 0.5
+    let outlined = false
+
+    if (effectiveRender === 'outline') {
+      const adapter = await loadFontkitAdapter()
+      const loaded = await resolveFontForText(text, spec.fontPath)
+      const font = adapter === null || loaded === null ? undefined : createOutlineFont(adapter, loaded.bytes)
+      if (font !== undefined) {
+        const outline = outlineOpsFor(text, font, fontSize, color)
+        markOps.push(outline.body)
+        markWidth = outline.width
+        textDrawn = text
+        outlined = true
+      } else {
+        notes.push('轮廓模式（render: outline）无法加载字体，已退回文字模式')
       }
-      textWidthUnits = units * fontSize
-    } else {
-      const standard = await doc.embedFont(StandardFonts.HelveticaBold)
-      fontRef = standard.name
-      fontObjectRef = standard.ref
-      textDrawn = text.replace(/[^\x20-\x7e]/g, '')
-      glyphOperand = standard.encodeText(textDrawn).toString()
-      textWidthUnits = textDrawn.length * 0.5 * fontSize
-      for (const char of text) if (!/[^\x20-\x7e]/.test(char)) droppedChars.push(char)
-      if (textDrawn !== text) {
-        notes.push('未找到可编码该文字的系统字体，已改用 Helvetica 并丢弃非拉丁字符')
+    }
+
+    if (!outlined) {
+      effectiveRender = 'text'
+      const loaded = await resolveFontForText(text, spec.fontPath)
+      if (loaded !== null) {
+        const fontkit = await loadFontkitAdapter()
+        if (fontkit !== null) doc.registerFontkit(fontkit)
+        const font = await doc.embedFont(loaded.bytes, { subset: true })
+        markFont = { name: FONT_RESOURCE_NAME, ref: font.ref }
+        // The operand MUST be the font's encoded glyph string, not the text: a
+        // subset font renumbers its glyphs, so writing the literal characters
+        // paints whatever glyphs happen to sit at those codes.
+        markOps.push(
+          `BT /${FONT_RESOURCE_NAME} ${n(fontSize)} Tf ${n(color.r)} ${n(color.g)} ${n(color.b)} rg `
+          + `1 0 0 1 0 ${n(fontSize * 0.2)} Tm ${font.encodeText(text).toString()} Tj ET`,
+        )
+        markWidth = drawnWidth(font, text, fontSize)
+        textDrawn = text
+      } else {
+        const standard = await doc.embedFont(StandardFonts.HelveticaBold)
+        // The predicate here used to be inverted, so the characters reported as
+        // dropped were exactly the ones that had survived.
+        const { drawable, dropped } = splitDrawableText(text)
+        droppedChars.push(...dropped)
+        if (drawable === '') {
+          throw new Error(
+            `水印文字「${text}」既不能用轮廓模式绘制，系统中也没有可编码它的字体（Helvetica 无法表示非拉丁字符）`,
+          )
+        }
+        markFont = { name: FONT_RESOURCE_NAME, ref: standard.ref }
+        markOps.push(
+          `BT /${FONT_RESOURCE_NAME} ${n(fontSize)} Tf ${n(color.r)} ${n(color.g)} ${n(color.b)} rg `
+          + `1 0 0 1 0 ${n(fontSize * 0.2)} Tm ${standard.encodeText(drawable).toString()} Tj ET`,
+        )
+        markWidth = drawnWidth(standard, drawable, fontSize)
+        textDrawn = drawable
+        if (drawable !== text) {
+          notes.push('未找到可编码该文字的系统字体，已改用 Helvetica 并丢弃非拉丁字符')
+        }
       }
     }
   }
 
-  const pages = doc.getPages()
-  const targets = spec.pages === undefined
-    ? pages.map((_, index) => index + 1)
-    : spec.pages.filter(page => page >= 1 && page <= pages.length)
+  if (spec.image === undefined && textDrawn === '') {
+    throw new Error('水印内容为空：没有可绘制的文字，也没有提供图片')
+  }
+  if (!(markWidth > 0)) markWidth = fontSize
+  // A text block is at least a line high; an image is exactly its own pixels, and
+  // inflating that would push the picture off its own centre.
+  if (spec.image === undefined) markHeight = Math.max(markHeight, fontSize * 1.15)
 
-  // ── build one Form XObject per distinct page size ────────────────────────
-  // A tiled mark needs a per-size body, so documents with mixed page sizes get
-  // one XObject per size rather than a stretched or clipped mark.
-  const bodyCache = new Map<string, PDFRef>()
+  const markStream = PDFRawStream.of(
+    doc.context.obj({
+      Type: 'XObject',
+      Subtype: 'Form',
+      FormType: 1,
+      // Deliberately generous, because the BBox clips: ascenders and descenders
+      // reach outside the em box, and cutting them off would be a silent loss.
+      BBox: [
+        -fontSize * 0.5,
+        -fontSize * 0.5,
+        markWidth + fontSize * 0.5,
+        markHeight + fontSize * 0.5,
+      ],
+      Name: MARK_RESOURCE_NAME,
+      Resources: doc.context.obj({
+        ...(markFont === undefined ? {} : { Font: doc.context.obj({ [markFont.name]: markFont.ref }) }),
+        ...(markImage === undefined ? {} : { XObject: doc.context.obj({ [markImage.name]: markImage.ref }) }),
+      }),
+    }) as never,
+    deflateSync(Buffer.from(markOps.join('\n'), 'latin1')),
+  )
+  ;(markStream as { dict: PDFDict }).dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'))
+  const markRef = doc.context.register(markStream)
 
-  const buildFor = (pageWidth: number, pageHeight: number): { ref: PDFRef; name: string } => {
-    const key = `${Math.round(pageWidth)}x${Math.round(pageHeight)}|${placement}`
-    const cached = bodyCache.get(key)
-    const name = WATERMARK_MARKER
-    if (cached !== undefined) return { ref: cached, name }
+  // ── the outer watermark: one per distinct page geometry ───────────────────
+  const outerCache = new Map<string, PDFRef>()
+  const outerFor = (geometry: MarkGeometry): PDFRef => {
+    const key = [
+      geometry.regionX,
+      geometry.regionY,
+      geometry.regionWidth,
+      geometry.regionHeight,
+      geometry.placement,
+      geometry.rotation,
+      geometry.margin,
+    ].join('|')
+    const cached = outerCache.get(key)
+    if (cached !== undefined) return cached
 
-    const ops: string[] = ['q']
-    const inner = buildMarkBody({
-      ...(glyphOperand === undefined ? {} : { glyphOperand }),
-      ...(textWidthUnits === undefined ? {} : { textWidthUnits }),
-      ...(imageName === undefined ? {} : { imageName }),
-      ...(imageWidth === undefined ? {} : { imageWidth }),
-      ...(imageHeight === undefined ? {} : { imageHeight }),
-      pageWidth,
-      pageHeight,
-      placement,
-      corner,
-      rotation,
-      opacity,
-      color,
-      fontSize,
-      margin,
-      fontRef,
-    })
-
-    if (placement === 'tile') {
-      // Repeat on a strided grid. Two rows of offset tiles is the usual look:
-      // it covers the page without the marks stacking on one another.
-      const strideX = Math.max(120, fontSize * 6)
-      const strideY = Math.max(120, fontSize * 4)
-      const half = strideX / 2
-      for (let y = -strideY; y < pageHeight + strideY; y += strideY) {
-        for (let x = -strideX; x < pageWidth + strideX; x += strideX) {
-          const offset = ((Math.round(y / strideY) % 2) + 2) % 2 === 0 ? 0 : half
-          ops.push(`q 1 0 0 1 ${n(x + offset)} ${n(y)} cm`, inner, 'Q')
-        }
-      }
-    } else {
-      ops.push(inner)
-    }
-    ops.push('Q')
-
-    const body = ops.join('\n')
+    const body = buildWatermarkBody(geometry, markWidth, markHeight, MARK_RESOURCE_NAME)
     const stream = PDFRawStream.of(
       doc.context.obj({
         Type: 'XObject',
         Subtype: 'Form',
         FormType: 1,
-        // The mark is authored in page coordinates, so its own BBox is the page.
-        BBox: [0, 0, pageWidth, pageHeight],
-        // The `/Name` is what makes a later scan able to identify this mark by
-        // construction rather than by guessing at its appearance.
+        // Authored in page coordinates, so the BBox is the page's visible region:
+        // the mark is clipped to the page rather than spilling into the bleed,
+        // and — because the tile grid is fitted inside it — no glyph is ever cut
+        // in half by it.
+        BBox: [
+          geometry.regionX,
+          geometry.regionY,
+          geometry.regionX + geometry.regionWidth,
+          geometry.regionY + geometry.regionHeight,
+        ],
         Name: WATERMARK_MARKER,
-        // The inner Resources must reference the REAL objects: a stub dict here
-        // means the `Do` and the `Tf` resolve to nothing and the mark paints
-        // empty — which is exactly how this failed the first time.
         Resources: doc.context.obj({
-          ...(fontObjectRef === undefined ? {} : { Font: doc.context.obj({ [fontRef]: fontObjectRef }) }),
-          ...(imageObjectRef === undefined ? {} : { XObject: doc.context.obj({ [imageName ?? 'WMImg']: imageObjectRef }) }),
+          XObject: doc.context.obj({ [MARK_RESOURCE_NAME]: markRef }),
           ExtGState: doc.context.obj({ GSW: doc.context.obj({ ca: opacity, CA: opacity }) }),
         }),
       }) as never,
       deflateSync(Buffer.from(body, 'latin1')),
     )
-    const dict = (stream as { dict: PDFDict }).dict
-    // The stream body is already deflated, so say so.
-    dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'))
+    ;(stream as { dict: PDFDict }).dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'))
     const ref = doc.context.register(stream)
-    bodyCache.set(key, ref)
-    return { ref, name }
+    outerCache.set(key, ref)
+    return ref
+  }
+
+  // ── pages ─────────────────────────────────────────────────────────────────
+  const pages = doc.getPages()
+  const requested = spec.pages === undefined ? pages.map((_, index) => index + 1) : spec.pages
+  const targets = requested.filter(page => Number.isInteger(page) && page >= 1 && page <= pages.length)
+  const outOfRange = requested.filter(page => !targets.includes(page))
+  if (targets.length === 0) {
+    // Stamping nothing and reporting success is how `pages: 0` used to look like
+    // a completed job.
+    throw new Error(`pages 里没有有效页号：文档共 ${pages.length} 页，收到 ${JSON.stringify(requested)}`)
+  }
+  if (outOfRange.length > 0) {
+    notes.push(`已忽略超出范围的页号：${outOfRange.join(', ')}（文档共 ${pages.length} 页）`)
   }
 
   for (const pageNumber of targets) {
     const page = pages[pageNumber - 1]
     if (page === undefined) continue
-    const { width, height } = page.getSize()
-    const { ref, name } = buildFor(width, height)
+    const region = pageRegion(page as never)
+    const outerRef = outerFor({
+      regionX: region.x,
+      regionY: region.y,
+      regionWidth: region.width,
+      regionHeight: region.height,
+      placement,
+      corner,
+      rotation,
+      fontSize,
+      margin,
+    })
 
-    // Register the XObject in this page's resources and append its invocation
-    // to the page's content, so the mark paints last (on top of content) and
-    // the page's own stream is never rewritten.
-    const resources = page.node.Resources()
-    let xobjects = resources.lookup(PDFName.of('XObject'), PDFDict)
-    if (!(xobjects instanceof PDFDict)) {
-      xobjects = doc.context.obj({}) as PDFDict
-      resources.set(PDFName.of('XObject'), xobjects)
-    }
-    xobjects.set(PDFName.of(name), ref)
+    const resources = pageResources(page as never, doc.context as never)
+    const xobjects = ensureXObjectDict(resources, doc.context as never)
+    xobjects.set(PDFName.of(WATERMARK_MARKER), outerRef)
 
-    const invocation = `\nq /${name} Do Q\n`
-    const fresh = PDFRawStream.of(
-      doc.context.obj({ Filter: 'FlateDecode' }) as never,
-      deflateSync(Buffer.from(invocation, 'latin1')),
-    )
-    const invocationRef = doc.context.register(fresh)
+    // Re-stamping replaces the mark instead of stacking a second one: the
+    // resource entry now points at the new XObject, and an existing invocation of
+    // the same name already paints it. Appending unconditionally would double the
+    // mark's opacity and leave the previous object behind for nothing.
+    const alreadyInvoked = readPageContentStreams(page as never, doc.context as never)
+      .some(stream => new RegExp(`/${WATERMARK_MARKER}\\s+Do`).test(stream.text))
+    if (alreadyInvoked) continue
 
-    const contents = page.node.Contents()
-    if (contents instanceof PDFArray) {
-      contents.push(invocationRef)
-    } else {
-      // Wrap the existing stream and the invocation into an array so the page
-      // keeps its original content untouched.
-      const array = doc.context.obj([contents, invocationRef])
-      page.node.set(PDFName.of('Contents'), array)
-    }
-  }
-
-  if (imageName !== undefined) {
-    // The image's own object must live in the XObject's resources, which are
-    // per-size; registering it on the context is enough for pdf-lib to write it.
-    notes.push('图片水印：尺寸按原始像素绘制，未做缩放')
+    const invocation = artifact
+      // `/Artifact` says "this is decoration, not content": assistive technology
+      // and PDF/UA checkers then skip the mark instead of reading it as body text.
+      ? `\n/Artifact <</Type /Pagination /Subtype /Watermark>> BDC\nq /${WATERMARK_MARKER} Do Q\nEMC\n`
+      : `\nq /${WATERMARK_MARKER} Do Q\n`
+    appendPageContent(page as never, doc.context as never, invocation)
   }
 
   const bytes = await doc.save()
@@ -456,9 +734,129 @@ export async function addWatermark(
       xobjectName: WATERMARK_MARKER,
       textDrawn,
       droppedChars: [...new Set(droppedChars)],
+      render: effectiveRender,
+      artifact,
       notes,
     },
   }
+}
+
+/** The slice of a page node these helpers touch. */
+interface PageNodeLike {
+  get(name: PDFName): unknown
+  set(name: PDFName, value: unknown): void
+}
+
+/** The slice of a PDF context these helpers touch. */
+interface ContextLike {
+  lookup(value: unknown): unknown
+  obj(literal: unknown): unknown
+  register(value: unknown): PDFRef
+}
+
+/** Walk up the page tree looking for an inherited `/Resources`. */
+function inheritedResources(node: PageNodeLike, context: ContextLike): PDFDict | undefined {
+  let parent = node.get(PDFName.of('Parent'))
+  let depth = 0
+  while (parent !== undefined && depth < 64) {
+    depth += 1
+    const resolved = context.lookup(parent)
+    if (resolved === undefined || resolved === null) return undefined
+    const dict = resolved as PDFDict
+    const own = dict.get(PDFName.of('Resources'))
+    if (own !== undefined) {
+      const found = context.lookup(own)
+      if (found instanceof PDFDict) return found
+    }
+    parent = dict.get(PDFName.of('Parent'))
+  }
+  return undefined
+}
+
+/**
+ * The page's own resource dictionary.
+ *
+ * A page may declare none (relying on the page tree) or borrow an indirect one
+ * that sibling pages share. Both cases get a page-private copy: writing into a
+ * shared dictionary would list the watermark on pages that were never stamped,
+ * and a page with no `/Resources` anywhere used to crash the whole run on
+ * `undefined.lookup(...)`.
+ */
+function pageResources(page: { node: PageNodeLike }, context: ContextLike): PDFDict {
+  const own = page.node.get(PDFName.of('Resources'))
+  if (own !== undefined && !(own instanceof PDFRef)) {
+    const resolved = context.lookup(own)
+    if (resolved instanceof PDFDict) return resolved
+  }
+  const copy = context.obj({}) as PDFDict
+  const source = own !== undefined ? context.lookup(own) : inheritedResources(page.node, context)
+  if (source instanceof PDFDict) {
+    for (const [key, value] of source.entries()) copy.set(key, value)
+  }
+  page.node.set(PDFName.of('Resources'), copy)
+  return copy
+}
+
+/**
+ * The page's `/XObject` sub-dictionary, or `undefined`.
+ *
+ * `PDFDict.lookup(key, Type)` THROWS when the key is absent (it does not return
+ * `undefined`), so a page whose `/Resources` exists but carries no `/XObject`
+ * entry — a shape pdf-lib's own writer produces — took down the whole scan and
+ * the whole removal. `get` plus a type check cannot throw.
+ */
+function readXObjectDict(resources: PDFDict | undefined, context: ContextLike): PDFDict | undefined {
+  if (resources === undefined) return undefined
+  const entry = resources.get(PDFName.of('XObject'))
+  if (entry === undefined) return undefined
+  const resolved = context.lookup(entry)
+  return resolved instanceof PDFDict ? resolved : undefined
+}
+
+/** The page's `/XObject` sub-dictionary, copied when the current one may be shared. */
+function ensureXObjectDict(resources: PDFDict, context: ContextLike): PDFDict {
+  const current = resources.get(PDFName.of('XObject'))
+  if (current !== undefined && !(current instanceof PDFRef)) {
+    const resolved = context.lookup(current)
+    if (resolved instanceof PDFDict) return resolved
+  }
+  const copy = context.obj({}) as PDFDict
+  if (current !== undefined) {
+    const resolved = context.lookup(current)
+    if (resolved instanceof PDFDict) {
+      for (const [key, value] of resolved.entries()) copy.set(key, value)
+    }
+  }
+  resources.set(PDFName.of('XObject'), copy)
+  return copy
+}
+
+/**
+ * Append operators to a page's content as a NEW stream.
+ *
+ * `page.node.Contents()` resolves indirect objects, and building the new array
+ * out of the resolved value is what inlined a copy of the page's own content
+ * into the page dictionary and orphaned the original stream — doubling the
+ * document's content on every run. `get` returns the reference, so the array
+ * points at the existing streams instead of copying them.
+ */
+function appendPageContent(page: { node: PageNodeLike }, context: ContextLike, operators: string): void {
+  const stream = PDFRawStream.of(
+    context.obj({ Filter: 'FlateDecode' }) as never,
+    deflateSync(Buffer.from(operators, 'latin1')),
+  )
+  const ref = context.register(stream)
+  const raw = page.node.get(PDFName.of('Contents'))
+  if (raw === undefined) {
+    page.node.set(PDFName.of('Contents'), ref)
+    return
+  }
+  const resolved = raw instanceof PDFRef ? context.lookup(raw) : raw
+  if (resolved instanceof PDFArray) {
+    resolved.push(ref)
+    return
+  }
+  page.node.set(PDFName.of('Contents'), context.obj([raw, ref]))
 }
 
 /* -------------------------------------------------------------------------- */
@@ -524,15 +922,18 @@ export interface WatermarkScan {
  * empty list.
  */
 export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> {
-  const doc = await PDFDocument.load(bytes)
+  const doc = await PDFDocument.load(bytes, { updateMetadata: false })
   const candidates: WatermarkCandidate[] = []
   const refused: WatermarkScan['refused'] = []
   const pages = doc.getPages()
 
   for (const [index, page] of pages.entries()) {
     const pageNumber = index + 1
+    // `Resources()` walks the page tree, so an inherited dictionary is found
+    // too; it is `undefined` only for a page that declares none anywhere, which
+    // used to be a hard crash here.
     const resources = page.node.Resources()
-    const xobjects = resources.lookup(PDFName.of('XObject'), PDFDict)
+    const xobjects = readXObjectDict(resources, doc.context as never)
     const streams = readPageContentStreams(page as never, doc.context as never)
 
     // ── 1. XObject invocations ─────────────────────────────────────────────
@@ -721,6 +1122,51 @@ export interface RemoveWatermarkResult {
   notes: string[]
 }
 
+/** Stable identity of a candidate, used to confirm it describes this document. */
+function candidateKeyOf(candidate: WatermarkCandidate): string {
+  return [
+    candidate.page,
+    candidate.kind,
+    candidate.xobjectName ?? '',
+    candidate.streamIndex ?? '',
+    candidate.span?.start ?? '',
+    candidate.span?.end ?? '',
+  ].join('|')
+}
+
+/**
+ * The `/Artifact … BDC` … `EMC` block that directly wraps one watermark `Do`.
+ *
+ * Returns `undefined` unless the block holds nothing but whitespace and
+ * graphics-state operators besides that invocation: a wrapper with real content
+ * inside it is not ours to delete.
+ */
+function artifactWrapperSpan(
+  text: string,
+  doStart: number,
+  doEnd: number,
+): { start: number; end: number } | undefined {
+  const before = text.slice(0, doStart)
+  const bdcIndex = before.lastIndexOf('BDC')
+  if (bdcIndex < 0) return undefined
+  const artifactIndex = before.lastIndexOf('/Artifact', bdcIndex)
+  if (artifactIndex < 0) return undefined
+  const betweenBefore = text
+    .slice(bdcIndex + 3, doStart)
+    .replace(/\bq\b|\bQ\b|\bgs\b|\bcm\b/g, '')
+    .replace(/[-\d.\s/]+/g, '')
+  if (betweenBefore !== '') return undefined
+  const after = text.slice(doEnd)
+  const emcIndex = after.indexOf('EMC')
+  if (emcIndex < 0) return undefined
+  const betweenAfter = after
+    .slice(0, emcIndex)
+    .replace(/\bq\b|\bQ\b/g, '')
+    .replace(/[-\d.\s]+/g, '')
+  if (betweenAfter !== '') return undefined
+  return { start: artifactIndex, end: doEnd + emcIndex + 3 }
+}
+
 /**
  * Remove the candidates that can be removed.
  *
@@ -740,11 +1186,23 @@ export async function removeWatermarks(
   const dryRun = options.dryRun ?? true
   const minConfidence = options.minConfidence ?? 0.9
   const scan = await scanWatermarks(bytes)
+  const notes: string[] = []
   const pool = options.candidates ?? scan.candidates
 
-  const removed = pool.filter(candidate => candidate.confidence >= minConfidence)
-  const skipped = pool.filter(candidate => candidate.confidence < minConfidence)
-  const notes: string[] = []
+  // A caller-supplied list is only trustworthy if it describes THIS document.
+  // A candidate is little more than a resource name, so acting on a stale or
+  // foreign list would delete whatever happens to carry that name here.
+  const inThisDocument = new Set(scan.candidates.map(candidateKeyOf))
+  const usable = options.candidates === undefined
+    ? pool
+    : pool.filter(candidate => inThisDocument.has(candidateKeyOf(candidate)))
+  const foreign = pool.length - usable.length
+  if (foreign > 0) {
+    notes.push(`收到 ${foreign} 个与当前文档不匹配（或已过期）的候选，已忽略：它们描述的水印在这次扫描里不存在。`)
+  }
+
+  const removed = usable.filter(candidate => candidate.confidence >= minConfidence)
+  const skipped = usable.filter(candidate => candidate.confidence < minConfidence)
 
   if (dryRun || removed.length === 0) {
     if (skipped.length > 0) {
@@ -754,7 +1212,7 @@ export async function removeWatermarks(
     return { bytes, removed, skipped, notes }
   }
 
-  const doc = await PDFDocument.load(bytes)
+  const doc = await PDFDocument.load(bytes, { updateMetadata: false })
   const pages = doc.getPages()
 
   for (const candidate of removed) {
@@ -771,9 +1229,12 @@ export async function removeWatermarks(
           if (op.op !== 'Do') continue
           const name = op.operands.find(token => token.kind === 'name')
           if (name === undefined || name.raw.replace(/^\//, '') !== candidate.xobjectName) continue
-          // Include the surrounding `q`/`Q` if they are the immediate neighbours,
-          // so no unbalanced graphics state is left behind.
-          spans.push({ start: op.start, end: op.end, text: '' })
+          // Take the surrounding `/Artifact … BDC` … `EMC` wrapper with it. The
+          // tool writes that wrapper, so leaving it behind would leave an empty
+          // artifact block per page — debris that a later scan reports as
+          // "marked content" and a human has to wonder about.
+          const wrapper = artifactWrapperSpan(stream.text, op.start, op.end)
+          spans.push({ start: wrapper?.start ?? op.start, end: wrapper?.end ?? op.end, text: '' })
         }
         if (spans.length === 0) continue
         if (spansOverlap(spans)) continue
@@ -795,7 +1256,7 @@ export async function removeWatermarks(
       }
 
       const resources = page.node.Resources()
-      const xobjects = resources.lookup(PDFName.of('XObject'), PDFDict)
+      const xobjects = readXObjectDict(resources, doc.context as never)
       if (xobjects instanceof PDFDict) xobjects.delete(PDFName.of(candidate.xobjectName))
       notes.push(`第 ${candidate.page} 页：已移除水印 XObject /${candidate.xobjectName}`)
       continue

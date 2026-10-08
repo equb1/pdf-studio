@@ -14,6 +14,12 @@ coverage/
 *.lcov
 .nyc_output
 
+# Generated test fixtures
+# `test/fixtures/make-fixtures.mjs` rebuilds these on demand (`ensureFixtures()`),
+# so the binaries are caches, not sources.
+test/fixtures/*.pdf
+test/fixtures/*.png
+
 # Logs
 logs
 *.log
