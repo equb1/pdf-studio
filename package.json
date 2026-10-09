@@ -32,9 +32,10 @@
     "test:ocr": "node test/ocr.test.mjs",
     "test:searchable": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/searchable-pdf.test.mjs",
     "test:pipeline": "node --experimental-strip-types test/pipeline.test.mjs",
-    "test": "npm run test:routes && npm run test:text-layer && npm run test:content-stream && npm run test:readable-runs && npm run test:text-editor && npm run test:canvas-ui && npm run test:tools && npm run test:watermark && npm run test:qpdf && npm run test:searchable && npm run test:pipeline",
+    "test": "npm run test:routes && npm run test:text-layer && npm run test:content-stream && npm run test:readable-runs && npm run test:text-editor && npm run test:line-redraw && npm run test:canvas-ui && npm run test:confirm-ui && npm run test:tools && npm run test:plugin-wiring && npm run test:confirmation && npm run test:watermark && npm run test:qpdf && npm run test:searchable && npm run test:pipeline",
     "test:content-stream": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/content-stream.test.mjs",
     "test:text-editor": "node --experimental-strip-types test/text-editor.test.mjs",
+    "test:line-redraw": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/line-redraw.test.mjs",
     "test:readable-runs": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/readable-runs.test.mjs",
     "test:canvas-ui": "node --experimental-strip-types test/canvas-ui.test.mjs",
     "test:qpdf": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/qpdf.test.mjs",
@@ -43,7 +44,10 @@
     "commit": "node scripts/commit.mjs",
     "commit:lint": "node scripts/commit-lint.mjs",
     "hooks:install": "node scripts/install-hooks.mjs",
-    "hooks:check": "node scripts/install-hooks.mjs --check"
+    "hooks:check": "node scripts/install-hooks.mjs --check",
+    "test:confirm-ui": "node --experimental-strip-types test/confirm-ui.test.mjs",
+    "test:plugin-wiring": "node --experimental-strip-types test/plugin-wiring.test.mjs",
+    "test:confirmation": "node --experimental-strip-types test/confirmation.test.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.8",

@@ -17,6 +17,7 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { guard, readJsonBody, requireMethod, writeJson } from './http.ts'
+import { getPlan, listPlans, setPlanStatus } from '../core/confirmation.ts'
 import {
   analyzeDocument,
   applyTextEdits,
@@ -74,6 +75,14 @@ export interface WebRouteLike {
 export interface WebServerLike {
   register(route: WebRouteLike): () => void
   tapIndex?(transform: (html: string) => string): () => void
+  /**
+   * 正在监听的端口与绑定宿主（端口为 0 时由宿主填上 OS 分配的真实值）。
+   *
+   * 桌面端通过 `file://` 加载页面、fetch 走 IPC 桥接，相对路径在那里没有意义；
+   * 注入时给出绝对地址，两端才都能连上同一套 `/api/pdf-studio/*`。
+   */
+  port?: number
+  host?: string
 }
 
 /**
@@ -228,6 +237,43 @@ export function makePdfRoutes(options: { workspaceRoot: string }): WebRouteLike[
       handler: (req, res) => {
         if (!guard(req, res)) return
         writeJson(res, 200, { ok: true, plugin: 'dsh-pdf-studio', workspace })
+      },
+    },
+    {
+      // 一个前缀路由覆盖三条接口：
+      //   GET  /plans                → 待确认计划列表
+      //   POST /plans/{id}/confirm   → 确认（浮层卡片点「确认执行」）
+      //   POST /plans/{id}/cancel    → 取消
+      kind: 'prefix',
+      path: PDF_API_PREFIX + '/plans',
+      handler: (req, res) => {
+        if (!guard(req, res)) return
+        const url = new URL(req.url ?? '/', 'http://local')
+        const rest = url.pathname.slice((PDF_API_PREFIX + '/plans').length).replace(/^\/+/, '')
+        if (rest === '') {
+          if (req.method !== 'GET') {
+            writeJson(res, 405, { ok: false, error: '列表只支持 GET' })
+            return
+          }
+          writeJson(res, 200, { ok: true, plans: listPlans() })
+          return
+        }
+        const [planId, verb] = rest.split('/')
+        if (req.method !== 'POST') {
+          writeJson(res, 405, { ok: false, error: '确认/取消只支持 POST' })
+          return
+        }
+        if (planId === undefined || (verb !== 'confirm' && verb !== 'cancel')) {
+          writeJson(res, 400, { ok: false, error: '用法：POST /plans/{planId}/confirm 或 /cancel' })
+          return
+        }
+        const existing = getPlan(planId)
+        if (existing === undefined) {
+          writeJson(res, 404, { ok: false, error: `计划 ${planId} 不存在或已过期` })
+          return
+        }
+        const plan = setPlanStatus(planId, verb === 'confirm' ? 'confirmed' : 'cancelled')
+        writeJson(res, 200, { ok: true, plan })
       },
     },
     {

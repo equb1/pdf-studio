@@ -29,9 +29,16 @@
  */
 
 import { existsSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { analyzeDocument, applyTextEdits, exportSearchable, inspectDocument, protectPdf, readEditableDocument, reportWatermarks, stampWatermark, stripWatermarks, lineSummary } from './engine.ts'
+import { redrawLineInPdfBytes } from '../core/line-redraw.ts'
+import {
+  authorize,
+  DEFAULT_CONFIRMATION_POLICY,
+  renderPlanPrompt,
+  type ConfirmationPolicy,
+} from '../core/confirmation.ts'
 
 /** Structural view of the `dsh-tools` service this module registers into. */
 export interface ToolRegistry {
@@ -272,6 +279,11 @@ export interface ToolOptions {
   workspaceRoot: string
   /** Inline-image support, when the host provides it. */
   attachments?: AttachmentSink
+  /**
+   * 何时要求用户确认：`destructive`（默认，只有破坏性操作问）/ `always` / `never`。
+   * 由 profile 配置或 `DSH_PDF_STUDIO_CONFIRM` 决定。
+   */
+  confirmation?: ConfirmationPolicy
 }
 
 /** Read a required string argument, or throw with a usable message. */
@@ -346,6 +358,31 @@ function kindTally(kinds: readonly string[]): string {
  * and the `defineTool` factory are injected explicitly — the definitions do not
  * need to know how the host resolves those.
  */
+/**
+ * 计划/确认参数：所有"会写盘"或"代价高"的工具都带上。
+ *
+ * 这不只是礼貌性的确认：`confirm` 是**令牌**，工具执行前会重算计划 id 并比对参数与文件指纹，
+ * 参数被改过、文件被换过、计划过期或被取消都会被拒绝——避免"用户确认的是 A、执行的是 B"。
+ */
+const CONFIRM_PARAMS: Record<string, ParamSpec> = {
+  plan: { type: 'boolean', description: '只返回执行计划（确认单），不做任何写入。' },
+  confirm: { type: 'string', description: '确认令牌：把上一次返回的计划 id 原样传回即执行；参数或文件变了会被拒绝。' },
+  force: { type: 'boolean', description: '跳过确认直接执行（危险，仅供脚本与测试显式使用）。' },
+}
+
+/** 把工具参数翻译成确认模块的授权开关。 */
+function confirmationArgs(
+  options: ToolOptions,
+  args: Record<string, unknown>,
+): { policy: ConfirmationPolicy; planOnly: boolean; confirm: string | undefined; force: boolean } {
+  return {
+    policy: options.confirmation ?? DEFAULT_CONFIRMATION_POLICY,
+    planOnly: optionalBoolean(args, 'plan') === true,
+    confirm: optionalString(args, 'confirm'),
+    force: optionalBoolean(args, 'force') === true,
+  }
+}
+
 export function buildToolDefinitions(options: ToolOptions): unknown[] {
   // ── preview ──────────────────────────────────────────────────────────────
   //
@@ -406,17 +443,18 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
     description:
       '查看一个 PDF 的基本情况：页数、页面尺寸、是否加密，以及按页的类型（文字页 / 扫描图片页）。'
       + '默认很快；analyze=true 会做完整分诊（扫描页需要 OCR，可能很慢）。'
-      + 'runs=true 会列出可编辑的文字块及其 id，供 pdf_edit_text 使用。',
+      + 'runs=true 会列出可编辑的文字块及其 id，供 pdf_edit_text / pdf_replace_line 使用。',
     parameters: {
+      ...CONFIRM_PARAMS,
       path: { type: 'string', required: true, description: 'PDF 的完整路径或相对工作区路径。' },
       analyze: { type: 'boolean', description: '是否做完整分诊。扫描件会触发 OCR，耗时可能从秒到分钟。' },
       runs: { type: 'boolean', description: '是否列出现有文字块（含 id、文字、字体、字号、位置）。' },
     },
     output: TEXT_OUTPUT,
-    output: TEXT_OUTPUT,
     presentCall: args => ({ card: 'generic', title: `检查 ${basename(String(args.path ?? ''))}`, kind: 'read' }),
     async execute(args) {
       const source = resolveInput(args)
+      const analyze = optionalBoolean(args, 'analyze') === true
       const info = await inspectDocument(source)
       const lines: string[] = [
         info.readable
@@ -429,7 +467,23 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         lines.push(`页面尺寸：${first.width.toFixed(0)} × ${first.height.toFixed(0)} pt`)
       }
 
-      if (optionalBoolean(args, 'analyze')) {
+      const gate = authorize({
+        tool: 'pdf_inspect',
+        action: analyze ? 'analyze' : 'inspect',
+        parameters: { analyze, pages: info.pages, encrypted: info.encrypted },
+        inputs: [source],
+        // 只有深层分诊才昂贵；普通检查连页数探针都不额外花钱（info 已经拿到了）。
+        ...(analyze ? { pageCount: info.pages, wholeDocument: true } : {}),
+        hints: ['只想快速看结构就别加 analyze', '要改内容请用 pdf_edit_text'],
+        effects: analyze
+          ? ['只读，不修改任何文件', '扫描页会逐页 OCR，可能需要一段时间']
+          : ['只读，不修改任何文件'],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      if (analyze) {
         const analysis = await analyzeDocument(source)
         const summary = lineSummary(analysis.content)
         lines.push(`分诊：${kindTally(analysis.kinds)}`)
@@ -463,21 +517,48 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       '提取 PDF 的文字内容，带每一行的坐标。文字页走文本层，扫描页走 OCR。'
       + '用于阅读内容、搜索关键词、确认某段文字在哪里。',
     parameters: {
+      ...CONFIRM_PARAMS,
       path: { type: 'string', required: true, description: 'PDF 路径。' },
       page: { type: 'integer', description: '只提取这一页（1 开始）。省略则提取全部页。' },
       ocr: { type: 'boolean', description: '是否对图片页做 OCR。默认 true。' },
     },
     output: TEXT_OUTPUT,
-    output: TEXT_OUTPUT,
     presentCall: args => ({ card: 'generic', title: `提取文字 ${basename(String(args.path ?? ''))}`, kind: 'read' }),
     async execute(args) {
       const source = resolveInput(args)
-      const analysis = await analyzeDocument(source)
       const wanted = typeof args.page === 'number' ? Number(args.page) : undefined
+      // 整档 OCR 是高成本操作：页数多时先给计划，避免用户随口一句就要等几分钟。
+      // 只有"整档 + 要 OCR"才需要页数探针，单页提取不该为了一次确认多加载一遍文档。
+      // 注意：`optionalBoolean` 在参数缺失时返回 false，所以不能用它判断"默认 true"的三态。
+      // `ocr` 的语义是"默认开"——缺省时必须当 true，否则整档提取的高成本门控就形同虚设。
+      const ocrEnabled = args.ocr === undefined ? true : args.ocr === true
+      const wholeDocument = wanted === undefined && ocrEnabled
+      const probe = wholeDocument ? await inspectDocument(source) : undefined
+      const gate = authorize({
+        tool: 'pdf_extract_text',
+        action: wholeDocument ? 'extract-all' : 'extract-page',
+        parameters: { page: wanted ?? '全部', ocr: ocrEnabled, ...(probe === undefined ? {} : { pages: probe.pages }) },
+        inputs: [source],
+        ...(probe === undefined ? {} : { pageCount: probe.pages, wholeDocument: true }),
+        hints: ['只想看某一页就说「只看第 3 页」', '只要文字不要 OCR 就加 ocr=false'],
+        effects: probe === undefined
+          ? ['只读，不修改任何文件']
+          : ['只读，不修改任何文件', `将对全部 ${probe.pages} 页做文字提取（图片页走 OCR）`],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+      const analysis = await analyzeDocument(source)
       const out: string[] = []
       for (const page of analysis.content) {
         if (wanted !== undefined && page.page !== wanted) continue
         out.push(`── 第 ${page.page} 页（${page.kind}）──`)
+        if (page.kind === 'image') {
+          // 图片页的文字是 OCR 出来的，普通人很容易把识别噪声当正文。声明清楚，
+          // 并给出"要可搜索副本"的下一步，而不是让他自己琢磨为什么文字是乱的。
+          out.push('   ⚠️ 本页是图片页：以下文字来自 OCR，可能有错字或多余空格。'
+            + '需要一份可搜索/可复制的副本，请用 pdf_make_searchable。')
+        }
         for (const line of page.lines.slice(0, 80)) {
           out.push(`${line.text}   [x=${line.rect.x.toFixed(0)} y=${line.rect.y.toFixed(0)} w=${line.rect.width.toFixed(0)}]`)
         }
@@ -495,6 +576,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       '把扫描件变成可搜索的 PDF：对图片页做 OCR，把识别出的文字作为不可见文字层写入，'
       + '页面外观保持不变。生成新文件，绝不覆盖源文件。',
     parameters: {
+      ...CONFIRM_PARAMS,
       path: { type: 'string', required: true, description: '源 PDF 路径。' },
       output: { type: 'string', description: '输出路径。省略则在源文件旁生成 <名字>-searchable.pdf。' },
       mode: {
@@ -504,11 +586,24 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       },
     },
     output: TEXT_OUTPUT,
-    output: TEXT_OUTPUT,
     presentCall: args => ({ card: 'generic', title: `生成可搜索 PDF ${basename(String(args.path ?? ''))}`, kind: 'write' }),
     async execute(args) {
       const source = resolveInput(args)
       const output = resolveOutput(source, args, '-searchable', options.workspaceRoot)
+      const info = await inspectDocument(source)
+      const gate = authorize({
+        tool: 'pdf_make_searchable',
+        action: 'searchable',
+        parameters: { mode: args.mode === 'cover' ? 'cover' : 'invisible', pages: info.pages },
+        inputs: [source],
+        output,
+        pageCount: info.pages,
+        wholeDocument: true,
+        hints: ['想先看效果就用 pdf_preview', '想把识别文字可见地盖上去用 mode=cover'],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
       const analysis = await analyzeDocument(source)
       const result = await exportSearchable(
         analysis,
@@ -531,6 +626,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       '替换 PDF 中已有的文字，保持位置和其余内容不变。先用 pdf_inspect 并设 runs=true 拿到文字块的 id。'
       + '一次编辑要用同一份列表里的 id（改写后 id 会整体前移）。生成新文件，绝不覆盖源文件。',
     parameters: {
+      ...CONFIRM_PARAMS,
       path: { type: 'string', required: true, description: '源 PDF 路径。' },
       edits: {
         type: 'array',
@@ -582,7 +678,30 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         }
       })
 
+      const gate = authorize({
+        tool: 'pdf_edit_text',
+        action: 'edit',
+        // 参数里放完整的改写清单：改一处不同的文字就应得到不同的 planId。
+        parameters: { edits, pageCount: edits.length },
+        inputs: [source],
+        output,
+        hints: ['只改某一页就说「只改第 3 页」', '想换新文字就直接说新的文字'],
+        effects: ['不修改源文件，结果写入新的 PDF', '改写后文字块的 id 会整体前移，需要重新读取'],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
       const result = await applyTextEdits(source, output, edits)
+      // 0 产出的"已生成"是最危险的假成功：用户以为改好了，其实文件里一个字都没变。
+      // 这里改成明确失败，并给出下一步（多半是 targetId 过期，或者这页根本没有文字层）。
+      if (result.applied === 0) {
+        const why = result.notes.join('；') || '没有找到可改写的文字块'
+        throw new Error(
+          `没有应用任何改写（0/${edits.length}）：${why}。`
+          + '请先用 pdf_inspect runs=true 重新读取文字块 id（改写后 id 会整体前移）；'
+          + '如果这一页是图片页（没有文字层），需要先 pdf_make_searchable 生成可搜索副本，再改写。',
+        )
+      }
       const text = [
         `已生成：${result.outputPath}`,
         `应用 ${result.applied} 处改写，共 ${edits.length} 处请求。`,
@@ -590,6 +709,129 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         '提示：改写后文字块的 id 会整体前移，继续编辑前请重新读取。',
       ].join('\n')
       return { text }
+    },
+  }
+
+  // ── replace line (整行重绘) ─────────────────────────────────────────────────
+  //
+  // 「把一个词改长」是 `pdf_edit_text` 做不对的事：它只换字形串、不移动后面的文字，
+  // PDF 又没有段落重排，于是 `turn` → `turning` 会与后一个字重叠。正确做法是找到该文字块
+  // 所在的 `BT … ET` 绘制组，抹掉整组文字，再在算出的页面坐标原点重画长度自由的新文字。
+  const replaceLine: ToolDefinition = {
+    name: 'pdf_replace_line',
+    description:
+      '整行重绘：把某个文字块所在的整行文字抹掉，再在原位重画新的整行文字。'
+      + '这是「把一个词改长/改短」的正确做法——pdf_edit_text 只换字形串、不移动后面的文字，'
+      + '改长会与后一个字重叠（引擎只提示"可能向右溢出"，不阻止）。'
+      + '先用 pdf_inspect 并设 runs=true 拿到目标行里任意一个文字块的 id。'
+      + '默认还会做「跨组重排」：真实文档常把视觉上的一整行拆成多个 BT…ET 绘制组，'
+      + '新文字变长时，会把同一视觉行右侧的兄弟组整体右移同样多的距离（只改各组自己的 Tm 锚点），'
+      + '避免重叠；不想动版面就传 shiftSiblings=false（那时若变长越界会给出重叠警告）。'
+      + '注意：它抹掉的是该文字块所在的整个 BT…ET 绘制组内的文字；'
+      + '如果这一组不只有你要改的那一句，请改用 pdf_edit_text（先用 pdf_inspect runs=true 看清组内文字）。'
+      + '生成新文件，绝不覆盖源文件。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      page: { type: 'integer', required: true, description: '页码（1 开始）。' },
+      targetId: { type: 'string', description: '目标行里任意一个文字块 id，来自 pdf_inspect 的 runs。' },
+      text: { type: 'string', description: '这一整组的新文字（长度自由，不会再与后文重叠）。' },
+      fontSize: { type: 'number', description: '可选，覆盖页面字号；省略时按原几何算出的页面字号。' },
+      shiftSiblings: {
+        type: 'boolean',
+        description: '是否把同一视觉行右侧的兄弟组整体右移让位，默认 true；false 则只重绘目标组。',
+      },
+      output: { type: 'string', description: '输出路径。省略则生成 <名字>-line-redrawn.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `整行重绘 ${basename(String(args.path ?? ''))}`,
+      kind: 'write',
+    }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const page = Number(args.page)
+      if (!Number.isFinite(page) || page < 1) throw new Error('page 无效：应为从 1 开始的页码')
+      const output = resolveOutput(source, args, '-line-redrawn', options.workspaceRoot)
+      const targetId = optionalString(args, 'targetId')
+      const text = optionalString(args, 'text')
+      const fontSize = typeof args.fontSize === 'number' && args.fontSize > 0 ? args.fontSize : undefined
+      // 三态：未指定 → 默认开启跨组重排；显式 false 才关闭。它必须参与 planId，
+      // 否则"确认的是会挪版面、执行的是不挪"就成了一条绕过一致性的通道。
+      const shiftSiblings = args.shiftSiblings === undefined ? true : args.shiftSiblings === true
+
+      const gate = authorize({
+        tool: 'pdf_replace_line',
+        action: 'redraw',
+        // 参数里放完整的重绘规格：换一行、换文字、换字号或换跨组重排开关都应得到不同的 planId。
+        parameters: {
+          page,
+          targetId: targetId ?? '(缺失)',
+          text: text ?? '(缺失)',
+          shiftSiblings,
+          ...(fontSize === undefined ? {} : { fontSize }),
+        },
+        inputs: [source],
+        output,
+        // 缺 id 或新文字时按"缺关键参数"处理：先给确认单，且带 confirm 也不能绕过。
+        missing: [
+          ...(targetId === undefined ? ['目标文字块 id（targetId）'] : []),
+          ...(text === undefined ? ['新的整行文字（text）'] : []),
+        ],
+        hints: [
+          '不确定改哪一行，就先 pdf_inspect runs=true 列文字块',
+          '如果这一组里不止你要改的那一句，改用 pdf_edit_text 更稳妥',
+          '不想让相邻片段跟着挪动就加 shiftSiblings=false',
+        ],
+        effects: [
+          '不修改源文件，结果写入新的 PDF',
+          '该文字块所在的整个绘制组会被抹掉后重画',
+          ...(shiftSiblings ? ['同一视觉行右侧的相邻绘制组会被整体右移让位'] : []),
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      // `force: true` 会跳过"缺关键参数"的硬拦截，所以这里再兜一次，绝不让 undefined 进入写入路径。
+      if (targetId === undefined || text === undefined) {
+        throw new Error('缺少 targetId 或 text 参数：整行重绘需要「改哪一行」和「改成什么」两样都明确。')
+      }
+
+      const { bytes, result } = await redrawLineInPdfBytes(new Uint8Array(await readFile(source)), {
+        page,
+        targetId,
+        text,
+        shiftSiblings,
+        ...(fontSize === undefined ? {} : { fontSize }),
+      })
+      await mkdir(dirname(output), { recursive: true })
+      await writeFile(output, bytes)
+
+      const oneLine = (value: string): string => {
+        const flat = value.replace(/\s+/g, ' ').trim()
+        return flat.length <= 80 ? flat : `${flat.slice(0, 80)}…`
+      }
+      const shift = result.siblingShift
+      const siblingLine = !shiftSiblings
+        ? '相邻片段处理：未移动相邻片段（shiftSiblings=false）。'
+        : shift === undefined
+          ? '相邻片段处理：这一行没有需要处理的相邻片段。'
+          : shift.shifted > 0
+            ? `相邻片段处理：已把同一视觉行右侧 ${shift.shifted} 个片段整体右移 ${shift.deltaPageX.toFixed(2)}pt。`
+            : shift.failed.length > 0
+              ? `相邻片段处理：${shift.failed.length} 个相邻片段无法安全平移（见下方注意）。`
+              : '相邻片段处理：新文字没有变长，未移动相邻片段。'
+      return {
+        text: [
+          `已生成：${output}`,
+          `这一行改成了：${oneLine(text)}`,
+          `被抹掉的原文：${oneLine(result.groupText) || '（无法解码）'}`,
+          siblingLine,
+          ...result.notes.map(note => `注意：${note}`),
+        ].join('\n'),
+      }
     },
   }
 
@@ -603,6 +845,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       + '用 render=outline 把同样字形画成矢量路径，外观一致但无法被文本提取。'
       + '注意：栅格化进页面图片的水印、或当正文绘制的水印，无法可靠移除，scan 会说明原因。',
     parameters: {
+      ...CONFIRM_PARAMS,
       path: { type: 'string', required: true, description: 'PDF 路径。' },
       action: {
         type: 'string',
@@ -670,6 +913,20 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
 
       if (action === 'remove') {
         const output = resolveOutput(source, args, '-clean', options.workspaceRoot)
+        // 这里不预扫一遍水印：真正执行时引擎自己会扫，再扫一次只是白花时间。
+        // 计划只声明"移除全部高置信度候选"，而这与文件指纹一一对应，planId 依然稳定。
+        const gate = authorize({
+          tool: 'pdf_watermark',
+          action: 'remove',
+          parameters: { candidates: '全部高置信度候选（置信度 ≥ 0.9）' },
+          inputs: [source],
+          output,
+          hints: ['只想删某几页就说「只删第 1 页」', '想先看候选清单就先跑 action=scan'],
+          effects: ['不修改源文件，结果写入新的 PDF', '只移除能自证的水印（低置信度候选会被保留）'],
+          ...confirmationArgs(options, args),
+        })
+        if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+        if (gate.kind === 'refused') throw new Error(gate.message)
         const result = await stripWatermarks(source, output, { dryRun: false })
         if (result.dryRun) {
           return { text: `没有可移除的高置信度水印，文件未改动。跳过 ${result.skipped.length} 个低置信度候选。` }
@@ -689,12 +946,11 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       if (action !== 'add') throw new Error(`未知 action：${action}`)
       const text = optionalString(args, 'text')
       const imagePath = optionalString(args, 'imagePath')
-      if (text === undefined && imagePath === undefined) {
-        throw new Error('action=add 需要 text 或 imagePath 参数')
-      }
       const image = imagePath === undefined ? undefined : new Uint8Array(await readFile(imagePath))
       const output = resolveOutput(source, args, '-watermarked', options.workspaceRoot)
-      const result = await stampWatermark(source, output, {
+      // 水印的完整规格只在这里构造一次：确认单里的内容与实际执行的参数是同一份对象，
+      // 从根上杜绝"计划说 A、执行 B"。
+      const spec = {
         ...(text === undefined ? {} : { text }),
         ...(image === undefined ? {} : { image }),
         ...(typeof args.placement === 'string' ? { placement: args.placement as never } : {}),
@@ -707,7 +963,33 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         ...(typeof args.margin === 'number' ? { margin: args.margin } : {}),
         ...(typeof args.artifact === 'boolean' ? { artifact: args.artifact } : {}),
         ...(Array.isArray(args.pages) ? { pages: (args.pages as unknown[]).map(Number) } : {}),
+      }
+      const watermarkDefaults: Record<string, unknown> = {}
+      if (args.render === undefined) watermarkDefaults.render = 'text'
+      if (args.placement === undefined) watermarkDefaults.placement = 'tile'
+      if (args.opacity === undefined) watermarkDefaults.opacity = 0.15
+      if (args.fontSize === undefined) watermarkDefaults.fontSize = 48
+      if (args.artifact === undefined) watermarkDefaults.artifact = true
+      if (args.pages === undefined) watermarkDefaults.pages = '全部页面'
+      const gate = authorize({
+        tool: 'pdf_watermark',
+        action: 'add',
+        parameters: {
+          content: text ?? (imagePath === undefined ? undefined : `图片文件 ${basename(imagePath)}`),
+          ...spec,
+          image: undefined,
+        },
+        inputs: [source, imagePath],
+        output,
+        // 没给水印内容时不要猜：给出一张"缺内容"的确认单，把常见取值直接摆在用户面前。
+        missing: text === undefined && imagePath === undefined ? ['水印文字（text）或图片（imagePath）'] : [],
+        defaults: watermarkDefaults,
+        hints: ['没想好写什么？常见的是「内部资料」「机密」「请勿外传」', '只加某几页就说「只要第 1、3 页」', '想换颜色就说「改成蓝色 #1050a0」'],
+        ...confirmationArgs(options, args),
       })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+      const result = await stampWatermark(source, output, spec)
       const shown = result.textDrawn === '' ? `${basename(imagePath ?? '')}（图片）` : result.textDrawn
       const lines = [
         `已生成：${result.outputPath}`,
@@ -728,6 +1010,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       '密码保护。action=check 查询是否加密、是否需要密码；action=encrypt 加密；action=decrypt 凭密码解除。'
       + '注意：查询结果区分「已加密」与「需要密码才能打开」，这是两件事。',
     parameters: {
+      ...CONFIRM_PARAMS,
       path: { type: 'string', required: true, description: 'PDF 路径。' },
       action: {
         type: 'string',
@@ -769,6 +1052,18 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         if (password === undefined) throw new Error('action=encrypt 需要 password 参数')
         const output = resolveOutput(source, args, '-protected', options.workspaceRoot)
         const allow = Array.isArray(args.allow) ? (args.allow as string[]) : undefined
+        const gate = authorize({
+          tool: 'pdf_protect',
+          action: 'encrypt',
+          parameters: { allow: allow ?? ['print'], password: '（已提供，不写入计划）' },
+          inputs: [source],
+          output,
+          hints: ['想放开更多权限就用 allow 列出', '只想查状态用 action=check'],
+          effects: ['不修改源文件，结果写入新的 PDF', '打开文件将需要密码'],
+          ...confirmationArgs(options, args),
+        })
+        if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+        if (gate.kind === 'refused') throw new Error(gate.message)
         const result = await protectPdf(source, output, {
           kind: 'encrypt',
           userPassword: password,
@@ -781,6 +1076,18 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
 
       if (action !== 'decrypt') throw new Error(`未知 action：${action}`)
       const output = resolveOutput(source, args, '-unlocked', options.workspaceRoot)
+      const gate = authorize({
+        tool: 'pdf_protect',
+        action: 'decrypt',
+        parameters: { password: '（已提供，不写入计划）' },
+        inputs: [source],
+        output,
+        hints: ['想只查状态用 action=check', '密码不对会失败，不会产出文件'],
+        effects: ['不修改源文件，结果写入新的 PDF', '结果不再受密码保护'],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
       const result = await protectPdf(source, output, { kind: 'decrypt', password: password ?? '' })
       return {
         text: `已生成：${result.outputPath}\n加密：${result.encrypted}（应为 false）`,
@@ -791,7 +1098,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
   // Compile to the registry-ready shape. Argument validation is wrapped around
   // `execute` here, so a malformed call fails with a readable message instead of
   // a TypeError from deep inside a tool body.
-  return [inspect, extract, searchable, edit, watermark, protect, preview].map((definition) => {
+  return [inspect, extract, searchable, edit, replaceLine, watermark, protect, preview].map((definition) => {
     const parameters = compileParameters(definition.parameters)
     const execute = definition.execute
     return {

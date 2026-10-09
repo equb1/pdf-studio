@@ -21,9 +21,38 @@
 ;(function () {
   'use strict'
 
+  // Two injection paths exist (the web shell and the desktop client can both
+  // serve this file into the same page), so the surface must be idempotent:
+  // mounting twice would stack two launchers and two panels on top of each
+  // other. The first mount wins and the second returns immediately.
+  if (window.__dshPdfStudioMounted) return
+  // Bail out WITHOUT claiming the flag if the document is not ready yet: a
+  // script injected into <head> has to be allowed to succeed when it is
+  // injected again after the body exists.
+  if (!document.body) return
+  window.__dshPdfStudioMounted = true
+
   var API = '/api/pdf-studio'
   var HOST_ID = 'dsh-pdf-studio-host'
   if (document.getElementById(HOST_ID)) return
+
+  /**
+   * Base for every API call.
+   *
+   * The host may inject an absolute base (`globalThis.__DSH_PDF_STUDIO__ =
+   * { apiBase: 'http://127.0.0.1:19387/api/pdf-studio' }`) because the desktop
+   * client and the web GUI are not always the same origin as the page the
+   * surface is injected into. When nothing is injected we fall back to the
+   * same-origin relative path, which is what the in-page web shell uses.
+   *
+   * A trailing slash is stripped so `base + '/plans'` never produces `//plans`.
+   */
+  var apiBase = function () {
+    var injected = globalThis.__DSH_PDF_STUDIO__
+    var base = injected && typeof injected.apiBase === 'string' ? injected.apiBase.replace(/\s+$/, '') : ''
+    if (!base) return API
+    return base.replace(/\/+$/, '')
+  }
 
   // ── host element + shadow root ────────────────────────────────────────────
   var host = document.createElement('div')
@@ -123,6 +152,26 @@
     '.viewer .hint{position:absolute;top:14px;left:50%;transform:translateX(-50%);',
     'font-size:12px;color:#c7d2fe}',
     '.dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}',
+    /* pending plans: the confirmation card */
+    '.plans{display:flex;flex-direction:column;gap:8px;padding:8px 10px;border-radius:10px;',
+    'background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.4)}',
+    '.plans-title{font-weight:600;font-size:12px;color:#fcd34d}',
+    '.plan{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:8px;',
+    'background:rgba(7,11,26,.6);border:1px solid rgba(126,152,255,.28)}',
+    '.plan-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
+    '.plan-title{font-weight:600}',
+    '.plan-id{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#9aa8d8}',
+    /* The sheet is the host-supplied multi-line confirmation text: its newlines
+       are meaningful, so it is laid out as pre-wrap TEXT and never as markup. */
+    '.plan-sheet{margin:0;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#c7d2fe;',
+    'white-space:pre-wrap;word-break:break-word;background:rgba(11,16,32,.8);border-radius:6px;',
+    'padding:6px 8px;max-height:150px;overflow:auto}',
+    '.plan-list{margin:2px 0 0;padding-left:18px;font-size:12px;color:#c7d2fe}',
+    '.plan-list li{word-break:break-word}',
+    '.plan-ok{color:#6ee7b7;font-size:12px;word-break:break-all}',
+    '.tag.destructive{background:rgba(251,113,133,.22);color:#fda4af}',
+    '.tag.expensive{background:rgba(251,191,36,.2);color:#fcd34d}',
+    '.tag.ambiguous{background:rgba(96,165,250,.22);color:#93c5fd}',
   ].join('')
   root.appendChild(style)
 
@@ -147,6 +196,14 @@
     '  <button class="x" type="button" title="关闭">×</button>',
     '</div>',
     '<div class="body">',
+    /* 待确认操作 — the very first thing in the panel. It stays fully hidden
+       until the host reports a pending plan (or the plans route is missing),
+       so it costs no space in the common case. */
+    '  <div class="plans" id="plans" style="display:none">',
+    '    <div class="plans-title">待确认操作</div>',
+    '    <div id="planList"></div>',
+    '    <div class="muted" id="plansDown" style="display:none">计划接口暂不可用</div>',
+    '  </div>',
     '  <div class="row">',
     '    <input type="text" id="path" placeholder="PDF 路径，或从下方选择" />',
     '    <button class="ghost" id="list" type="button">浏览</button>',
@@ -263,6 +320,9 @@
   var pageLabel = $('pageLabel')
   var pageNav = $('pageNav')
   var editSummary = $('editSummary')
+  var plansEl = $('plans')
+  var planListEl = $('planList')
+  var plansDownEl = $('plansDown')
 
   /** Model state for the edit view. */
   var model = null
@@ -294,10 +354,14 @@
   launcher.addEventListener('click', function () {
     panel.classList.add('open')
     launcher.style.display = 'none'
+    // Polling is tied to the panel being on screen: a closed panel polls
+    // nothing, an open one asks the host for pending plans every few seconds.
+    startPlansPolling()
   })
   panel.querySelector('.x').addEventListener('click', function () {
     panel.classList.remove('open')
     launcher.style.display = 'flex'
+    stopPlansPolling()
   })
 
   // ── tabs ──────────────────────────────────────────────────────────────────
@@ -322,7 +386,7 @@
     var dir = pathInput.value.trim()
     var depth = $('depth').value
     setStatus('正在列出…')
-    request(API + '/list?depth=' + depth + (dir ? '&dir=' + encodeURIComponent(dir) : ''))
+    request(apiBase() + '/list?depth=' + depth + (dir ? '&dir=' + encodeURIComponent(dir) : ''))
       .then(function (body) {
         filesBox.style.display = 'block'
         filesBox.innerHTML = ''
@@ -380,7 +444,7 @@
     exportBtn.disabled = true
     resultEl.innerHTML = ''
     setStatus('分析中…（图片页需要 OCR，可能较慢）')
-    request(API + '/analyze', {
+    request(apiBase() + '/analyze', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: target }),
     }).then(function (body) {
@@ -395,7 +459,7 @@
     var target = pathInput.value.trim()
     setStatus('生成中…')
     exportBtn.disabled = true
-    request(API + '/export', {
+    request(apiBase() + '/export', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: target, mode: coverChk.checked ? 'cover' : 'invisible' }),
     }).then(function (body) {
@@ -444,7 +508,7 @@
       wrapEl.innerHTML = ''
       img = document.createElement('img')
       img.alt = 'page ' + page.page
-      img.src = API + '/page.png?scale=2&page=' + page.page + '&path=' + encodeURIComponent(model.sourcePath)
+      img.src = apiBase() + '/page.png?scale=2&page=' + page.page + '&path=' + encodeURIComponent(model.sourcePath)
       wrapEl.appendChild(img)
     } else {
       img = wrapEl.querySelector('img')
@@ -559,7 +623,7 @@
     edits = {}
     selected = null
     editorEl.style.display = 'none'
-    request(API + '/runs?path=' + encodeURIComponent(target))
+    request(apiBase() + '/runs?path=' + encodeURIComponent(target))
       .then(function (body) {
         model = body
         currentPage = 0
@@ -602,7 +666,7 @@
     if (list.length === 0) return
     setStatus('正在写回…')
     $('apply').disabled = true
-    request(API + '/apply', {
+    request(apiBase() + '/apply', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: model.sourcePath, edits: list }),
     }).then(function (body) {
@@ -658,7 +722,7 @@
     if (!text) { setStatus('请输入水印文字', 'err'); return }
     setStatus('正在添加水印…')
     $('wmAdd').disabled = true
-    request(API + '/watermark/add', {
+    request(apiBase() + '/watermark/add', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         path: target,
@@ -681,7 +745,7 @@
     var target = pathInput.value.trim()
     if (!target) { setStatus('请先指定 PDF', 'err'); return }
     setStatus('正在扫描水印…')
-    request(API + '/watermark/scan?path=' + encodeURIComponent(target))
+    request(apiBase() + '/watermark/scan?path=' + encodeURIComponent(target))
       .then(function (body) {
         renderCandidates(body)
         setStatus('扫描到 ' + body.candidates.length + ' 个候选', body.candidates.length ? 'ok' : 'warn')
@@ -694,7 +758,7 @@
     if (!target) return
     setStatus('正在移除…')
     $('wmRemove').disabled = true
-    request(API + '/watermark/remove', {
+    request(apiBase() + '/watermark/remove', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: target }),
     }).then(function (body) {
@@ -731,7 +795,7 @@
   $('pwCheck').addEventListener('click', function () {
     var target = pathInput.value.trim()
     if (!target) { setStatus('请先指定 PDF', 'err'); return }
-    request(API + '/encryption?path=' + encodeURIComponent(target))
+    request(apiBase() + '/encryption?path=' + encodeURIComponent(target))
       .then(function (body) { showProtection(body); setStatus('已查询保护状态') })
       .catch(function (error) { log('查询失败：' + error.message, 'err') })
   })
@@ -742,7 +806,7 @@
     if (!target) { setStatus('请先指定 PDF', 'err'); return }
     if (!password) { setStatus('请输入密码', 'err'); return }
     setStatus('正在加密…')
-    request(API + '/protect', {
+    request(apiBase() + '/protect', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: target, action: 'encrypt', userPassword: password, allow: ['print'] }),
     }).then(function (body) {
@@ -757,7 +821,7 @@
     var password = $('pwDecrypt').value
     if (!target) { setStatus('请先指定 PDF', 'err'); return }
     setStatus('正在解除密码…')
-    request(API + '/protect', {
+    request(apiBase() + '/protect', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ path: target, action: 'decrypt', password: password }),
     }).then(function (body) {
@@ -833,7 +897,7 @@
       // instead of the document.
       img.loading = 'lazy'
       var scale = thumbScale(size.width, cssWidth)
-      var thumbUrl = API + '/page.png?page=' + size.page + '&scale=' + scale.toFixed(2)
+      var thumbUrl = apiBase() + '/page.png?page=' + size.page + '&scale=' + scale.toFixed(2)
         + '&path=' + encodeURIComponent(info.sourcePath)
 
       var placeholder = document.createElement('div')
@@ -853,7 +917,7 @@
         report()
       })
       img.addEventListener('click', function () {
-        openViewer(API + '/page.png?page=' + size.page + '&scale=2&path=' + encodeURIComponent(info.sourcePath))
+        openViewer(apiBase() + '/page.png?page=' + size.page + '&scale=2&path=' + encodeURIComponent(info.sourcePath))
       })
 
       frame.appendChild(img)
@@ -876,7 +940,7 @@
     if (!target) { setStatus('请先指定 PDF（可直接粘贴完整路径）', 'err'); return }
     setStatus('读取文档信息…')
     $('pages').innerHTML = '<div class="muted" style="padding:8px">读取中…</div>'
-    request(API + '/info?path=' + encodeURIComponent(target))
+    request(apiBase() + '/info?path=' + encodeURIComponent(target))
       .then(function (body) {
         var size = body.sizes[0]
         // Set the summary BEFORE rendering: `renderPages` updates the same line
@@ -899,6 +963,247 @@
     if (!target) return
     $('previewOpen').click()
   })
+
+  // ── 待确认操作: plans waiting for a human ─────────────────────────────────
+  //
+  // A destructive call must not happen because an agent decided it should. The
+  // host writes the plan down, this panel lists it, and the plan only runs
+  // after the person in front of the screen presses 确认执行 — the assistant is
+  // then told to continue with that exact plan id.
+  //
+  // Everything on a card (title, sheet, hints) arrives from the API and is
+  // inserted with textContent. A title or a sheet is untrusted input: it is
+  // never parsed as HTML, and no innerHTML concatenation happens below.
+
+  var POLL_MS = 3000
+  var GATE_LABELS = { destructive: '破坏性', expensive: '高成本', ambiguous: '有歧义' }
+  /** Last list from GET /plans; left untouched when that route fails. */
+  var plans = []
+  var plansDown = false
+  /** planId -> 'confirmed' | 'cancelled'. A local decision outranks a stale
+   *  server list, so a handled card never flips back to 待确认. */
+  var planDecisions = {}
+  /** planId -> plan snapshot, so a confirmed card still shows the sentence the
+   *  user has to paste even if a later poll no longer lists that plan. */
+  var planSnapshots = {}
+  var plansTimer = null
+
+  var isExpired = function (plan) {
+    return typeof plan.expiresAt === 'number' && plan.expiresAt <= Date.now()
+  }
+  /** First 8 characters: enough to identify a plan in a sentence, short enough
+   *  to say out loud. */
+  var shortId = function (plan) {
+    return typeof plan.planId === 'string' ? plan.planId.slice(0, 8) : ''
+  }
+  var remainingText = function (plan) {
+    if (typeof plan.expiresAt !== 'number') return ''
+    var ms = plan.expiresAt - Date.now()
+    if (ms <= 0) return '已过期'
+    return '还有 ' + Math.ceil(ms / 60000) + ' 分钟'
+  }
+
+  /** A list of plain-text items, or nothing at all when it is empty/absent. */
+  var appendPlanList = function (card, caption, items) {
+    if (!Array.isArray(items) || items.length === 0) return
+    var box = document.createElement('div')
+    var label = document.createElement('div')
+    label.className = 'muted'
+    label.textContent = caption
+    box.appendChild(label)
+    var list = document.createElement('ul')
+    list.className = 'plan-list'
+    items.forEach(function (item) {
+      var li = document.createElement('li')
+      li.textContent = String(item)
+      list.appendChild(li)
+    })
+    box.appendChild(list)
+    card.appendChild(box)
+  }
+
+  var buildPlanCard = function (plan, decision) {
+    var card = document.createElement('div')
+    card.className = 'plan'
+    card.setAttribute('data-plan-id', typeof plan.planId === 'string' ? plan.planId : '')
+
+    var head = document.createElement('div')
+    head.className = 'plan-head'
+    var title = document.createElement('span')
+    title.className = 'plan-title'
+    title.textContent = plan.title ? String(plan.title) : '待确认操作'
+    head.appendChild(title)
+
+    var gateKey = typeof plan.gate === 'string' ? plan.gate : ''
+    var gate = document.createElement('span')
+    gate.className = 'tag ' + (GATE_LABELS[gateKey] ? gateKey : 'empty')
+    gate.textContent = GATE_LABELS[gateKey] || gateKey || '待确认'
+    head.appendChild(gate)
+
+    var idEl = document.createElement('span')
+    idEl.className = 'plan-id'
+    idEl.textContent = '#' + shortId(plan)
+    head.appendChild(idEl)
+
+    var remaining = remainingText(plan)
+    if (remaining) {
+      var time = document.createElement('span')
+      time.className = remaining === '已过期' ? 'warn' : 'muted'
+      time.textContent = remaining
+      head.appendChild(time)
+    }
+    card.appendChild(head)
+
+    // The sheet is a multi-line confirmation slip. textContent + the pre-wrap
+    // rule keep its newlines without ever treating it as markup.
+    if (plan.sheet) {
+      var sheet = document.createElement('div')
+      sheet.className = 'plan-sheet'
+      sheet.textContent = String(plan.sheet)
+      card.appendChild(sheet)
+    }
+    appendPlanList(card, '可纠正项（直接说就能改）', plan.hints)
+    appendPlanList(card, '需要确认的歧义', plan.ambiguous)
+
+    if (decision === 'confirmed') {
+      var done = document.createElement('div')
+      done.className = 'plan-ok'
+      done.textContent = '已确认，请对助手说：继续执行计划 ' + shortId(plan)
+      card.appendChild(done)
+      return card
+    }
+
+    var row = document.createElement('div')
+    row.className = 'row'
+    var confirmBtn = document.createElement('button')
+    confirmBtn.type = 'button'
+    confirmBtn.setAttribute('data-action', 'confirm')
+    confirmBtn.textContent = '确认执行'
+    var cancelBtn = document.createElement('button')
+    cancelBtn.type = 'button'
+    cancelBtn.className = 'ghost'
+    cancelBtn.setAttribute('data-action', 'cancel')
+    cancelBtn.textContent = '取消'
+    var note = document.createElement('span')
+    note.className = 'muted'
+    row.appendChild(confirmBtn)
+    row.appendChild(cancelBtn)
+    row.appendChild(note)
+    card.appendChild(row)
+
+    var busy = false
+    /**
+     * POST confirm|cancel, then commit the answer locally.
+     *
+     * A failure must not pop a dialog (the panel has none) and must not lose
+     * the plan: the buttons go back to enabled and the card says so once.
+     */
+    var resolvePlan = function (action, commit) {
+      if (busy) return
+      busy = true
+      confirmBtn.disabled = true
+      cancelBtn.disabled = true
+      note.textContent = action === 'confirm' ? '正在确认…' : '正在取消…'
+      request(apiBase() + '/plans/' + encodeURIComponent(plan.planId) + '/' + action, { method: 'POST' })
+        .then(function (body) { commit(body && body.plan ? body.plan : plan) })
+        .catch(function () {
+          busy = false
+          confirmBtn.disabled = false
+          cancelBtn.disabled = false
+          note.textContent = '操作失败，请重试'
+        })
+    }
+
+    confirmBtn.addEventListener('click', function () {
+      resolvePlan('confirm', function (updated) {
+        planDecisions[plan.planId] = 'confirmed'
+        planSnapshots[plan.planId] = updated && updated.planId ? updated : plan
+        renderPlans()
+      })
+    })
+    cancelBtn.addEventListener('click', function () {
+      resolvePlan('cancel', function () {
+        planDecisions[plan.planId] = 'cancelled'
+        delete planSnapshots[plan.planId]
+        renderPlans()
+      })
+    })
+    return card
+  }
+
+  var renderPlans = function () {
+    var entries = []
+    var listed = {}
+
+    plans.forEach(function (plan) {
+      if (!plan || typeof plan !== 'object') return
+      var id = plan.planId
+      if (id === undefined || id === null) return
+      listed[id] = true
+      if (planDecisions[id] === 'cancelled') return
+      // Only a LOCAL confirmation keeps a card on screen: a plan the server
+      // already reports as confirmed was decided elsewhere, and the section is
+      // for plans that still need a person.
+      if (planDecisions[id] === 'confirmed') {
+        entries.push({ plan: plan, decision: 'confirmed' })
+        return
+      }
+      if (plan.status === 'pending') entries.push({ plan: plan, decision: null })
+    })
+
+    // A confirmed card outlives the list entry it came from: the user still has
+    // to copy the sentence for the assistant.
+    Object.keys(planSnapshots).forEach(function (id) {
+      if (listed[id] || planDecisions[id] !== 'confirmed') return
+      if (isExpired(planSnapshots[id])) { delete planSnapshots[id]; return }
+      entries.push({ plan: planSnapshots[id], decision: 'confirmed' })
+    })
+
+    planListEl.innerHTML = ''
+    entries.forEach(function (entry) { planListEl.appendChild(buildPlanCard(entry.plan, entry.decision)) })
+    plansDownEl.style.display = plansDown ? '' : 'none'
+    // Hidden entirely when there is nothing to confirm and the host answered:
+    // no placeholder, no "暂无". The one exception is an unreachable route,
+    // which has to say so — otherwise "no plans" and "could not ask" would look
+    // identical.
+    plansEl.style.display = (entries.length > 0 || plansDown) ? '' : 'none'
+  }
+
+  var refreshPlans = function () {
+    return request(apiBase() + '/plans')
+      .then(function (body) {
+        plansDown = false
+        plans = body && Array.isArray(body.plans) ? body.plans : []
+        renderPlans()
+      })
+      .catch(function () {
+        // Silent failure on purpose: a missing or older host route must not
+        // throw anything over the panel, and the last known plans stay visible.
+        plansDown = true
+        renderPlans()
+      })
+  }
+
+  var startPlansPolling = function () {
+    if (plansTimer !== null) return
+    refreshPlans()
+    plansTimer = window.setInterval(refreshPlans, POLL_MS)
+  }
+  var stopPlansPolling = function () {
+    if (plansTimer === null) return
+    window.clearInterval(plansTimer)
+    plansTimer = null
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') return
+    // Returning to the tab is exactly when a plan may have appeared (or run
+    // out), so refresh now instead of waiting up to POLL_MS.
+    refreshPlans()
+  })
+
+  // Ask once at load: a plan may already be waiting before the panel is opened.
+  refreshPlans()
 
   // ── movable surfaces ──────────────────────────────────────────────────────
   //
@@ -1053,6 +1358,15 @@
   })
 
   // Re-clamp on resize so a surface can never become unreachable.
+  // 卸载/测试用的停止钩子：jsdom 里 window.setInterval 会挂住 Node 事件循环，
+  // 测试跑完必须能显式停掉轮询（页面里也用于将来可能的 HMR 卸载）。
+  window.__dshPdfStudioStop = function () {
+    if (plansTimer) {
+      window.clearInterval(plansTimer)
+      plansTimer = null
+    }
+  }
+
   window.addEventListener('resize', function () {
     var launcherSaved = positions.launcher
     if (launcherSaved) pin(launcher, launcherSaved.left, launcherSaved.top)

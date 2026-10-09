@@ -278,8 +278,27 @@ export async function replacePageText(
   const fontkit = await loadFontkitAdapter()
   if (fontkit !== null) pdf.registerFontkit(fontkit)
 
-  const resources = page.node.Resources()
-  const existingFonts = resources.lookup(PDFName.of('Font'), PDFDict)
+  // 页面可能没有自己的 /Resources（继承自页树），也可能有 /Resources 但没有 /Font —— 
+  // 前者要建一份**页面私有**的副本（否则会把子集字体名写进兄弟页面共享的字典），
+  // 后者不能用会抛异常的 lookup。这两条以前都会让编辑一页无字体的页面直接失败。
+  const node = (page as unknown as {
+    node: { get(key: unknown): unknown; set(key: unknown, value: unknown): void }
+  }).node
+  const ownResources = node.get(PDFName.of('Resources'))
+  let resources = page.node.Resources() as unknown as {
+    lookupMaybe?(key: unknown, type?: unknown): unknown
+    set?(key: unknown, value: unknown): void
+    entries?(): Iterable<[unknown, unknown]>
+  } | undefined
+  if (resources === undefined || ownResources === undefined) {
+    const copy = (context as unknown as { obj(value: unknown): unknown }).obj({}) as {
+      set(key: unknown, value: unknown): void
+    }
+    for (const [key, value] of resources?.entries?.() ?? []) copy.set(key, value)
+    node.set(PDFName.of('Resources'), copy)
+    resources = copy as never
+  }
+  const existingFonts = resources?.lookupMaybe?.(PDFName.of('Font'), PDFDict)
   const fontDict = existingFonts instanceof PDFDict
     ? existingFonts
     : PDFDict.withContext((context as unknown as { obj(value: unknown): unknown }).obj({}) as never)
@@ -483,7 +502,7 @@ export async function replacePageText(
 
   // If this page had no /Font dict at all, install the one we populated.
   if (!(existingFonts instanceof PDFDict)) {
-    resources.set?.(PDFName.of('Font'), fontDict)
+    resources?.set?.(PDFName.of('Font'), fontDict)
   }
 
   // `replacementsApplied` counts TARGETS, not spans and not streams. A single

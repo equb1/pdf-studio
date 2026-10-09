@@ -242,7 +242,7 @@ export async function applyTextEdits(
   outputPath: string,
   edits: Array<{ page: number; targetId: string; to: string; fontSize?: number }>,
   options: { fonts?: { path?: string } } = {},
-): Promise<{ outputPath: string; pages: number; applied: number; notes: string[] }> {
+): Promise<{ outputPath: string; pages: number; applied: number; notes: string[]; written: boolean }> {
   const doc = await PDFDocument.load(await readFile(sourcePath))
   const pages = doc.getPages()
   const notes: string[] = []
@@ -275,9 +275,15 @@ export async function applyTextEdits(
     notes.push(...result.notes.map(note => `第 ${pageNumber} 页：${note}`))
   }
 
+  // 一处都没改成时**不写盘**：留下一个"什么都没变"的副本会让人以为改成功了，
+  // 而且那个文件与源文件逐字节等价，只会在磁盘上添乱。
+  if (applied === 0) {
+    return { outputPath, pages: doc.getPageCount(), applied, notes, written: false }
+  }
+
   const bytes = await doc.save()
   await writeOutput(outputPath, bytes)
-  return { outputPath, pages: doc.getPageCount(), applied, notes }
+  return { outputPath, pages: doc.getPageCount(), applied, notes, written: true }
 }
 
 

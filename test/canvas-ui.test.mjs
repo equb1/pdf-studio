@@ -362,4 +362,16 @@ check('apply sent the page number', appliedPayload?.edits?.[0]?.page === 1, Stri
 }
 
 console.log(`\n${failed === 0 ? 'ALL CANVAS-UI CHECKS PASSED' : failed + ' check(s) FAILED'}`)
+// The surface polls `/plans` every 3s while the panel is open, through
+// `window.setInterval`. jsdom hands those timers to Node itself, and `close()`
+// alone does not reliably stop them, so the surface's own stop hook is called
+// and the process is then ended explicitly — otherwise the suite prints its
+// results and then sits forever, which reads as a hang rather than a pass.
+try {
+  window.__dshPdfStudioStop?.()
+} catch {
+  // 老版本脚本没有这个钩子也不该让测试失败。
+}
+window.close()
 if (failed > 0) process.exitCode = 1
+process.exit(failed > 0 ? 1 : 0)

@@ -36,13 +36,15 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 
 console.log('agent tools\n')
 
-const tools = buildToolDefinitions({ workspaceRoot: OUT_DIR })
+// 这里测的是工具本身的机制，不是「执行前确认」本身，所以显式关掉确认闸门；
+// 闸门行为由 test/confirmation.test.mjs 单独覆盖。
+const tools = buildToolDefinitions({ workspaceRoot: OUT_DIR, confirmation: 'never' })
 const byName = new Map(tools.map(tool => [tool.name, tool]))
 
 // ── 1. registry shape ───────────────────────────────────────────────────────
 
-check('the expected tools are defined', tools.length === 7, tools.map(t => t.name).join(', '))
-for (const name of ['pdf_inspect', 'pdf_extract_text', 'pdf_make_searchable', 'pdf_edit_text', 'pdf_watermark', 'pdf_protect', 'pdf_preview']) {
+check('the expected tools are defined', tools.length === 8, tools.map(t => t.name).join(', '))
+for (const name of ['pdf_inspect', 'pdf_extract_text', 'pdf_make_searchable', 'pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_preview']) {
   check(`  ${name} is present`, byName.has(name))
 }
 
