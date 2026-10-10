@@ -20,12 +20,16 @@
  */
 
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   PDFDocument,
+  PDFHexString,
+  PDFName,
   PDFNumber,
   PDFOperator,
   beginText,
@@ -96,6 +100,7 @@ mkdirSync(OUT, { recursive: true })
 const SOURCE = join(IN, 'line-source.pdf')
 const SIBLING = join(IN, 'line-sibling.pdf')
 const TD_ANCHOR = join(IN, 'line-td-anchor.pdf')
+const TIMES_FIXTURE = join(IN, 'line-times.pdf')
 const IMAGE_ONLY = join(IN, 'image-only.pdf')
 const outPath = name => join(OUT, name)
 
@@ -226,6 +231,125 @@ async function makeTdAnchorFixture(path) {
   return fontPath
 }
 
+/** 系统里真实存在的 Times New Roman；夹具与"沿用原文家族"的断言都依赖它。 */
+const TIMES_FILE = '/System/Library/Fonts/Supplemental/Times New Roman.ttf'
+
+/** 去掉子集前缀与 pdf-lib 的数字后缀，得到可比较的家族名。 */
+const normalizeFontName = (name) =>
+  (name ?? '').replace(/^\//, '').replace(/^[A-Z]{6}\+/, '').replace(/-\d+$/, '')
+
+/**
+ * 复刻真文件里"按名字引用、不内嵌"的字体 + 一个内嵌的兄弟组。
+ *
+ * - 目标组用**手工造的非内嵌 Type0**，`BaseFont=/ABCDEF+TimesNewRomanPSMT`、带 ToUnicode 与 `/W`
+ *   （真文件里的 FT67 就是这样：`/AUWCNV+TimesNewRomanPSMT`，没有 FontFile）。
+ * - 兄弟组用**真正内嵌的 Times New Roman**，这样渲染时两边都应该是 Times，ink 高度才有可比性。
+ *
+ * 返回 `{ times }`，测试用它在同一字号下算字形列偏移。
+ */
+async function makeTimesFixture(path) {
+  if (!existsSync(TIMES_FILE)) return undefined
+  const timesBytes = new Uint8Array(await readFile(TIMES_FILE))
+  const doc = await PDFDocument.create()
+  doc.registerFontkit(await loadFontkitAdapter())
+  const times = await doc.embedFont(timesBytes, { subset: true })
+  const page = doc.addPage([PAGE_WIDTH, PAGE_HEIGHT])
+  const siblingKey = page.node.newFontDictionary('FT', times.ref)
+
+  // ── 手工造非内嵌 Type0（目标组用）──
+  const targetText = '9.turn'
+  const widthParts = []
+  const bfchars = []
+  for (const char of targetText) {
+    const code = char.codePointAt(0)
+    widthParts.push(code, [Math.round(times.widthOfTextAtSize(char, 1000))])
+    const hex = code.toString(16).toUpperCase().padStart(4, '0')
+    bfchars.push(`<${hex}> <${hex}>`)
+  }
+  const cmapText = [
+    '/CIDInit /ProcSet findresource begin',
+    '12 dict begin',
+    'begincmap',
+    '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def',
+    '/CMapName /Adobe-Identity-UCS def',
+    '/CMapType 2 def',
+    '1 begincodespacerange',
+    '<0000> <FFFF>',
+    'endcodespacerange',
+    `${bfchars.length} beginbfchar`,
+    ...bfchars,
+    'endbfchar',
+    'endcmap',
+    'CMapName currentdict /CMap defineresource pop',
+    'end',
+    'end',
+  ].join('\n')
+  const cmapRef = doc.context.register(doc.context.flateStream(Buffer.from(cmapText, 'latin1')))
+  const cidFont = doc.context.obj({
+    Type: 'Font',
+    Subtype: 'CIDFontType2',
+    BaseFont: PDFName.of('ABCDEF+TimesNewRomanPSMT'),
+    CIDSystemInfo: { Registry: 'Adobe', Ordering: 'Identity', Supplement: 0 },
+    FontDescriptor: {
+      Type: 'FontDescriptor',
+      FontName: PDFName.of('ABCDEF+TimesNewRomanPSMT'),
+      Flags: 4,
+      FontBBox: [-250, -250, 1000, 1000],
+      ItalicAngle: 0,
+      Ascent: 683,
+      Descent: -217,
+      CapHeight: 662,
+      StemV: 80,
+    },
+    DW: 500,
+    W: widthParts,
+  })
+  const cidRef = doc.context.register(cidFont)
+  const type0 = doc.context.obj({
+    Type: 'Font',
+    Subtype: 'Type0',
+    BaseFont: PDFName.of('ABCDEF+TimesNewRomanPSMT'),
+    Encoding: PDFName.of('Identity-H'),
+    DescendantFonts: [cidRef],
+    ToUnicode: cmapRef,
+  })
+  const targetKey = page.node.newFontDictionary('FTmo', doc.context.register(type0))
+
+  const operators = [
+    pushGraphicsState(),
+    concatTransformationMatrix(1, 0, 0, -1, 0, PAGE_HEIGHT),
+  ]
+  // 目标组：手工字体，码位 = Unicode 码点。
+  operators.push(pushGraphicsState(), beginText(), setFontAndSize(targetKey, FIXTURE_TF_SIZE))
+  operators.push(PDFOperator.of('Tm', [
+    num(FIXTURE_TM_SCALE), num(0), num(0), num(-FIXTURE_TM_SCALE), num(109.08), num(477.89),
+  ]))
+  for (const char of targetText) {
+    operators.push(showText(PDFHexString.of(char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0'))))
+    operators.push(moveText(times.widthOfTextAtSize(char, FIXTURE_TF_SIZE), 0))
+  }
+  operators.push(endText(), popGraphicsState())
+  // 兄弟组：内嵌 Times。
+  operators.push(...lineOperators(times, siblingKey, 'around/round', 136.44, 477.89))
+  // 对照行（不同基线）。
+  operators.push(...lineOperators(times, siblingKey, 'Control 对照行', 109.08, 447.89))
+  operators.push(popGraphicsState())
+  page.pushOperators(...operators)
+
+  await writeFile(path, await doc.save({ updateMetadata: false }))
+  return { times }
+}
+
+/** 用真实 canvas（子进程、不加载 dom-shim）测 ink 高度。 */
+function renderInk(pdfPath, spec) {
+  const helper = fileURLToPath(new URL('./support/render-ink.mjs', import.meta.url))
+  const stdout = execFileSync(process.execPath, ['--experimental-strip-types', helper, pdfPath, JSON.stringify(spec)], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  return JSON.parse(stdout.trim())
+}
+
 /** 只有图形、没有文字层的页面（模拟图片页）。 */
 async function makeImageOnlyFixture(path) {
   const doc = await PDFDocument.create()
@@ -248,6 +372,7 @@ if (fontPath === undefined) {
   await makeImageOnlyFixture(IMAGE_ONLY)
   await makeMultiGroupFixture(SIBLING)
   await makeTdAnchorFixture(TD_ANCHOR)
+  const timesFixture = await makeTimesFixture(TIMES_FIXTURE)
   console.log(`夹具字体：${fontPath}`)
 
   const SOURCE_BYTES = new Uint8Array(await readFile(SOURCE))
@@ -764,6 +889,115 @@ if (fontPath === undefined) {
     const qpdfOverflow = await runQpdf(['--check'], new Uint8Array(await readFile(OVERFLOW_OUT)), 'read-only')
     check('溢出：写出的文件结构仍然有效（qpdf --check exit 0）', qpdfOverflow.exit === 0,
       `exit=${qpdfOverflow.exit}`)
+  }
+
+  /* ── 12. 沿用原文的字体家族（真文件里 Times New Roman 的场景） ───────────── */
+
+  console.log('\n12. 重画优先沿用原文的字体家族（Times New Roman），并用真实 canvas 对比 ink 高度\n')
+
+  if (timesFixture === undefined) {
+    console.log('SKIP：系统里没有 Times New Roman，跳过字体家族相关断言。')
+  } else {
+    const { times } = timesFixture
+    // 夹具里的字体名：目标组是 /ABCDEF+TimesNewRomanPSMT（非内嵌），兄弟组是内嵌 Times。
+    const fixtureFonts = await (async () => {
+      const doc = await PDFDocument.load(new Uint8Array(await readFile(TIMES_FIXTURE)))
+      return readPageFonts(doc.context, doc.getPages()[0])
+    })()
+    const targetBase = [...fixtureFonts.values()].find(info => (info.baseFont ?? '').includes('TimesNewRoman'))
+    check('夹具里目标组的字体是带子集前缀的非内嵌 Times',
+      targetBase !== undefined && normalizeFontName(targetBase.baseFont) === 'TimesNewRomanPSMT',
+      [...fixtureFonts.values()].map(info => info.baseFont).join(', '))
+
+    const timesTargetId = await firstRunId(TIMES_FIXTURE)
+    const result = await redrawLineInPdfBytes(new Uint8Array(await readFile(TIMES_FIXTURE)), {
+      page: 1, targetId: timesTargetId, text: '9.turning', shiftSiblings: true,
+    })
+    const TIMES_OUT = outPath('line-times-out.pdf')
+    await writeFile(TIMES_OUT, result.bytes)
+    check('字体家族：matched=true（沿用了原文家族）', result.result.fontChoice.matched === true,
+      JSON.stringify(result.result.fontChoice))
+    check('字体家族：用的是 Times New Roman 文件',
+      result.result.fontChoice.usedPath.includes('Times New Roman'), result.result.fontChoice.usedPath)
+    check('字体家族：结果里写明已沿用', result.result.notes.some(note => note.includes('已沿用原文的字体家族')),
+      result.result.notes.join(' | '))
+
+    // 读回输出：新文字所在内容流的 Tf 指向的字体，其 BaseFont 去前缀后应与兄弟组一致。
+    const outDoc = await PDFDocument.load(new Uint8Array(await readFile(TIMES_OUT)))
+    const outPage = outDoc.getPages()[0]
+    const outStreams = readPageContentStreams(outPage, outDoc.context)
+    const outFonts = readPageFonts(outDoc.context, outPage)
+    const drawingStream = outStreams[outStreams.length - 1]
+    const drawingShows = [...trackGraphicsState(parseOperations(tokenize(drawingStream.text))).values()]
+    const newFontName = drawingShows.find(show => show.fontName !== undefined)?.fontName
+    const newBase = newFontName === undefined ? undefined : outFonts.get(newFontName)?.baseFont
+    check('字体家族：新文字的字体不再是 Arial Unicode', normalizeFontName(newBase) !== 'ArialUnicodeMS',
+      String(newBase))
+    check('字体家族：新文字的 BaseFont 与兄弟组一致（去子集前缀后）',
+      normalizeFontName(newBase) === 'TimesNewRomanPSMT', String(newBase))
+
+    // ink 高度：用"只含 x-height 的字形列"比较——整段 run 的 ink 高度会被 'g' 的降部、
+    // '9' 的数字高度等字形差异污染，不能直接代表"字面大小"。
+    // 新文字 '9.turning' 里的 'u','r','n'；兄弟组 'around/round' 里的 'a','r','o','u','n'。
+    const size = FIXTURE_TF_SIZE * FIXTURE_TM_SCALE
+    const newX0 = result.result.origin.x + times.widthOfTextAtSize('9.t', size)
+    const newX1 = newX0 + times.widthOfTextAtSize('urn', size)
+    const siblingX = 136.44 + (result.result.siblingShift?.deltaPageX ?? 0)
+    const sibX0 = siblingX
+    const sibX1 = siblingX + times.widthOfTextAtSize('aroun', size)
+    const ink = renderInk(TIMES_OUT, {
+      page: 1,
+      scale: 6,
+      band: [358, 370],
+      columns: [
+        { name: 'new', x0: newX0, x1: newX1 },
+        { name: 'sibling', x0: sibX0, x1: sibX1 },
+      ],
+    })
+    const newInk = ink.find(entry => entry.name === 'new')
+    const sibInk = ink.find(entry => entry.name === 'sibling')
+    check('ink 测量：两侧都测到了墨迹',
+      (newInk?.inkHeightPt ?? 0) > 0 && (sibInk?.inkHeightPt ?? 0) > 0,
+      JSON.stringify(ink))
+    const ratio = (newInk?.inkHeightPt ?? 0) / (sibInk?.inkHeightPt ?? 1)
+    check('ink 高度：新文字与兄弟组的 x-height 比值在 ±5% 内（沿用同族字体后视觉一致）',
+      Math.abs(ratio - 1) <= 0.05,
+      `new=${newInk?.inkHeightPt}pt sibling=${sibInk?.inkHeightPt}pt ratio=${ratio.toFixed(3)}`)
+
+    /* ── 13. 回退路径：新文字含 Times 没有的字符 → 换字体并说明 ─────────────── */
+
+    console.log('\n13. 新文字含原文没有的字符：显式回退并说明\n')
+
+    const fallback = await redrawLineInPdfBytes(new Uint8Array(await readFile(TIMES_FIXTURE)), {
+      page: 1, targetId: timesTargetId, text: '9.turning 转身', shiftSiblings: true,
+    })
+    const FALLBACK_OUT = outPath('line-times-fallback.pdf')
+    await writeFile(FALLBACK_OUT, fallback.bytes)
+    check('回退：matched=false', fallback.result.fontChoice.matched === false,
+      JSON.stringify(fallback.result.fontChoice))
+    check('回退：原因写明 Times 里没有这些字符',
+      (fallback.result.fontChoice.fallbackReason ?? '').includes('没有的字符'),
+      String(fallback.result.fontChoice.fallbackReason))
+    check('回退：结果里出现「已改用」的说明',
+      fallback.result.notes.some(note => note.includes('已改用') && note.includes('TimesNewRomanPSMT')),
+      fallback.result.notes.join(' | '))
+    check('回退：文件仍然写出', existsSync(FALLBACK_OUT))
+    if (fallback.result.fontChoice.sizeAdjustedFrom !== undefined) {
+      check('回退：字号调整被标注为估算',
+        fallback.result.notes.some(note => note.includes('估算')), fallback.result.notes.join(' | '))
+    }
+    const fallbackDoc = await PDFDocument.load(new Uint8Array(await readFile(FALLBACK_OUT)))
+    const fallbackPage = fallbackDoc.getPages()[0]
+    const fallbackFonts = readPageFonts(fallbackDoc.context, fallbackPage)
+    const fallbackStreams = readPageContentStreams(fallbackPage, fallbackDoc.context)
+    const fallbackShows = [...trackGraphicsState(
+      parseOperations(tokenize(fallbackStreams[fallbackStreams.length - 1].text)),
+    ).values()]
+    const fallbackFontName = fallbackShows.find(show => show.fontName !== undefined)?.fontName
+    const fallbackBase = fallbackFontName === undefined ? undefined : fallbackFonts.get(fallbackFontName)?.baseFont
+    check('回退：新文字用的是能画中文的字体，而不是 Times',
+      normalizeFontName(fallbackBase) !== 'TimesNewRomanPSMT' && (fallbackBase ?? '') !== '',
+      String(fallbackBase))
   }
 
   /* ── 安全不变量 + 收尾 ─────────────────────────────────────────────────── */

@@ -565,7 +565,16 @@ right/bottom 锚定切换为 auto                              ✓
   注意 `Tm` 的操作数在**用户空间**（不是文本空间），所以"页面右移 Δ"换算回锚点用的是
   `[δe, δf] × CTM线性部分 = [Δ, 0]`，而不是 `Δ / |Trm.a|`——实测该文档 CTM 缩放为 1，
   `Tm.e` 就是页面 x，除以 0.05 会多挪 20 倍。
-- **中英混排**用 `src/core/fonts.ts` 的系统 CJK 字体候选，新文字作为新子集嵌入，原字体不动。
+- **重画优先沿用原文的字体家族。** 很多 PDF 的字体是"按名字引用、不内嵌"的
+  （`/AUWCNV+TimesNewRomanPSMT`），阅读器用自己的 Times 替换。插件会从目标组字体字典读 `BaseFont`、
+  去掉子集前缀，按 `src/core/fonts.ts` 的 PostScript→系统字体表（Times / Arial / Arial Unicode / …）
+  解析出文件，**只有当该字体能完整渲染新文字时才用**（fontkit 逐码点检查，汉字会让拉丁字体自动落选）。
+  这样 `9.turning` 与右侧的 `around/round 转身` 会是同一家族，字面大小/粗细一致；
+  实测 x-height 比值 1.00（此前用 Arial Unicode 时明显偏大，用户截图反馈的就是这个问题）。
+- **无法匹配时换字体，但绝不静默**：结果里会出现「原文使用 TimesNewRomanPSMT，但新文字里含它没有的字符，
+  已改用 Arial Unicode.ttf，字面可能略有差异」；并会按 x-height / cap-height 比例（拿不到度量时退到
+  「原文 run 的 `/W` 宽度推出的等效字号」）把字号估一估以对齐邻居，标注为**估算**。
+- **中英混排**即由上面的回退覆盖（拉丁字体画不了汉字 → 换系统 CJK 字体），原字体不动。
 - **需要确认**（`destructive`）：先给确认单，带 `confirm=<planId>` 才写盘；缺 `targetId` / `text`
   时按"缺关键参数"处理，**带 confirm 也不能绕过**。`shiftSiblings` 参与 planId——改了它旧令牌即失效。
 - 与其它写盘工具一致：默认输出 `<名字>-line-redrawn.pdf`，绝不覆盖源文件。

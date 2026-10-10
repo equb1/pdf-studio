@@ -56,6 +56,8 @@
  */
 
 import { deflateSync } from 'node:zlib'
+import { readFile } from 'node:fs/promises'
+import { basename } from 'node:path'
 import { PDFArray, PDFDocument, PDFName, PDFRawStream, concatTransformationMatrix, rgb } from 'pdf-lib'
 import {
   parseOperations,
@@ -72,8 +74,16 @@ import {
   type ContentStream,
   type ReadableRun,
 } from './text-editor.ts'
-import { readPageFonts } from './font-map.ts'
-import { loadFontkitAdapter, resolveFontForText } from './fonts.ts'
+import { readPageFonts, type FontInfo } from './font-map.ts'
+import {
+  fontCoversText,
+  fontVerticalMetrics,
+  loadFontkitAdapter,
+  resolveFontForText,
+  resolveSystemFontByPostScriptName,
+  stripSubsetPrefix,
+  type LoadedFont,
+} from './fonts.ts'
 
 /* ── 矩阵 ─────────────────────────────────────────────────────────────────── */
 
@@ -773,10 +783,155 @@ export interface RedrawResult {
   blankedShows: number
   /** 实际使用的字体文件路径。 */
   fontPath: string
+  /** 字体家族的选择结果（是否沿用原文、回退原因、字号估算）。 */
+  fontChoice: FontChoiceReport
   /** 兄弟组平移的报告；未开启或同一行没有兄弟组时为 `undefined`。 */
   siblingShift?: SiblingShiftReport
   /** 需要提醒调用方的事项。 */
   notes: string[]
+}
+
+/** 实际选用字体的说明，供工具结果与测试读取。 */
+export interface FontChoiceReport {
+  /** 原文的 PostScript 名（已去子集前缀），能识别出来时才有。 */
+  originalPostScriptName?: string
+  /** 是否沿用了原文的字体家族。 */
+  matched: boolean
+  /** 实际使用的字体文件路径。 */
+  usedPath: string
+  /** 实际使用字体的 PostScript 名（pdf-lib 的字体名）。 */
+  usedPostScriptName: string
+  /** 没有沿用原文家族时的中文原因。 */
+  fallbackReason?: string
+  /** 回退时把字号从多少 pt 调整过（估算）。 */
+  sizeAdjustedFrom?: number
+  /** 字号调整的依据。 */
+  sizeAdjustBasis?: string
+}
+
+/** 解析结果：选中的字体 + 它是否是原文家族。 */
+interface FamilyFontResolution {
+  loaded: LoadedFont
+  matchedOriginal: boolean
+  originalPostScriptName?: string
+  fallbackReason?: string
+}
+
+/**
+ * 选重画用字体：**优先沿用原文的字体家族**。
+ *
+ * 顺序：
+ *   1. 调用方显式给了 `fontPath` → 用它（这是明确指令，不猜）；
+ *   2. 目标组第一个 run 的字体 `BaseFont` 去掉子集前缀得到 PostScript 名；
+ *      在 {@link resolveSystemFontByPostScriptName} 表里找到文件，且该文件能**完整**渲染新文字
+ *      → 用它（`matchedOriginal: true`）；
+ *   3. 否则回退到 `resolveFontForText`（系统 CJK 候选），并带上中文原因。
+ *
+ * 第 2 步的"能完整渲染"是关键：中英混排里含中文时，Times 这类拉丁字体必然缺字，
+ * 会自动落到第 3 步，而不是画出满屏 .notdef。
+ */
+async function resolveFamilyAwareFont(
+  fonts: ReadonlyMap<string, FontInfo>,
+  groupRuns: readonly ReadableRun[],
+  text: string,
+  explicitPath: string | undefined,
+): Promise<FamilyFontResolution | null> {
+  const firstFontName = groupRuns.find(run => run.fontName !== undefined)?.fontName
+  const originalBaseFont = firstFontName === undefined ? undefined : fonts.get(firstFontName)?.baseFont
+  const originalPostScriptName = stripSubsetPrefix(originalBaseFont)
+
+  if (explicitPath !== undefined && explicitPath !== '') {
+    const loaded = await resolveFontForText(text, explicitPath)
+    return loaded === null
+      ? null
+      : {
+          loaded,
+          matchedOriginal: false,
+          ...(originalPostScriptName === undefined ? {} : { originalPostScriptName }),
+          fallbackReason: '按调用方指定的 fontPath',
+        }
+  }
+
+  if (originalPostScriptName !== undefined) {
+    const path = resolveSystemFontByPostScriptName(originalPostScriptName)
+    if (path !== undefined) {
+      try {
+        const bytes = new Uint8Array(await readFile(path))
+        if (await fontCoversText(bytes, text)) {
+          return {
+            loaded: { path, bytes, cjk: /unicode|noto|hei|pingfang|song|yahei/i.test(path) },
+            matchedOriginal: true,
+            originalPostScriptName,
+          }
+        }
+        const fallback = await resolveFontForText(text)
+        return fallback === null
+          ? null
+          : {
+              loaded: fallback,
+              matchedOriginal: false,
+              originalPostScriptName,
+              fallbackReason: '新文字里含它没有的字符',
+            }
+      } catch {
+        // 读文件失败 → 走下面的"找不到匹配字体"分支。
+      }
+    }
+    const fallback = await resolveFontForText(text)
+    return fallback === null
+      ? null
+      : {
+          loaded: fallback,
+          matchedOriginal: false,
+          originalPostScriptName,
+          fallbackReason: `系统里找不到与 ${originalPostScriptName} 匹配的字体文件`,
+        }
+  }
+
+  const fallback = await resolveFontForText(text)
+  return fallback === null ? null : { loaded: fallback, matchedOriginal: false }
+}
+
+/**
+ * 回退换字体时，按纵向度量估一个字号缩放，尽量对齐邻居的视觉高度。
+ *
+ * 优先用 x-height（其次 cap-height）比例；两个字体缺度量时（例如 Arial Unicode MS 的
+ * OS/2 没有 xHeight），退到"**用原文 run 的 /W 宽度推出等效字号**"：让新字体在原文文字上的
+ * 宽度与原组实测宽度一致。两种都是估算，调用方必须在结果里说明。
+ */
+async function estimateFallbackScale(
+  originalPath: string | undefined,
+  fallbackPath: string,
+  groupText: string,
+  pageFontSize: number,
+  originalWidth: number,
+  fallbackFont: { widthOfTextAtSize(text: string, size: number): number },
+): Promise<{ scale: number; basis: string } | undefined> {
+  const metricsOf = async (path: string | undefined): Promise<Awaited<ReturnType<typeof fontVerticalMetrics>>> => {
+    if (path === undefined) return undefined
+    try {
+      return await fontVerticalMetrics(new Uint8Array(await readFile(path)))
+    } catch {
+      return undefined
+    }
+  }
+  const original = await metricsOf(originalPath)
+  const fallback = await metricsOf(fallbackPath)
+  if (original?.xHeightRatio !== undefined && fallback?.xHeightRatio !== undefined && fallback.xHeightRatio > 0) {
+    return { scale: original.xHeightRatio / fallback.xHeightRatio, basis: 'x-height 比例' }
+  }
+  if (original?.capHeightRatio !== undefined && fallback?.capHeightRatio !== undefined && fallback.capHeightRatio > 0) {
+    return { scale: original.capHeightRatio / fallback.capHeightRatio, basis: 'cap-height 比例' }
+  }
+  if (groupText !== '' && Number.isFinite(originalWidth) && originalWidth > 0) {
+    try {
+      const fallbackWidth = fallbackFont.widthOfTextAtSize(groupText, pageFontSize)
+      if (fallbackWidth > 0) return { scale: originalWidth / fallbackWidth, basis: '原文 run 的 /W 宽度推出的等效字号' }
+    } catch {
+      // 度不了就放弃调整。
+    }
+  }
+  return undefined
 }
 
 /** 截断用于报错的文字，避免把整页内容塞进一条消息。 */
@@ -888,7 +1043,6 @@ export async function redrawTextLine(
       `文字块 ${options.targetId} 的页面字号算出来是 ${computedSize}，几何异常，已放弃重绘。`,
     )
   }
-  const size = options.fontSize ?? computedSize
 
   const blanked = blankGroupGlyphs(stream.text, operations, range)
   if (blanked.spans.length === 0) {
@@ -897,19 +1051,65 @@ export async function redrawTextLine(
     )
   }
 
-  const loaded = await resolveFontForText(options.text, options.fontPath)
-  if (loaded === null) {
+  // 字体家族优先沿用原文（Times 就别拿 Arial Unicode 画），沿用不了才回退并说明原因。
+  const family = await resolveFamilyAwareFont(fonts, groupRuns, options.text, options.fontPath)
+  if (family === null) {
     throw new Error(
       `没有可用字体渲染「${shorten(options.text)}」：系统里找不到能覆盖这些字符的字体。`
       + '请确认已安装中文字体（macOS 通常自带 STHeiti / PingFang）。',
     )
   }
+  const loaded = family.loaded
 
   const fontkit = await loadFontkitAdapter()
   if (fontkit !== null) pdf.registerFontkit(fontkit)
   const font = await pdf.embedFont(loaded.bytes, { subset: true })
 
   const notes: string[] = []
+  // 回退换字体时，按度量把字号估一估，尽量对齐邻居的视觉高度。调用方传了 fontSize 就不动。
+  let size = options.fontSize ?? computedSize
+  let sizeAdjust: { from: number; to: number; basis: string } | undefined
+  if (!family.matchedOriginal && options.fontSize === undefined) {
+    const originalPath = family.originalPostScriptName === undefined
+      ? undefined
+      : resolveSystemFontByPostScriptName(family.originalPostScriptName)
+    const scaleInfo = await estimateFallbackScale(
+      originalPath, loaded.path, geometry.groupText, computedSize, targetGroup.pageWidth, font,
+    )
+    if (scaleInfo !== undefined && Number.isFinite(scaleInfo.scale)
+      && scaleInfo.scale > 0.5 && scaleInfo.scale < 2 && Math.abs(scaleInfo.scale - 1) > 0.02) {
+      const adjusted = computedSize * scaleInfo.scale
+      sizeAdjust = { from: computedSize, to: adjusted, basis: scaleInfo.basis }
+      size = adjusted
+    }
+  }
+  const fontChoice: FontChoiceReport = {
+    ...(family.originalPostScriptName === undefined ? {} : { originalPostScriptName: family.originalPostScriptName }),
+    matched: family.matchedOriginal,
+    usedPath: loaded.path,
+    usedPostScriptName: font.name,
+    ...(family.fallbackReason === undefined ? {} : { fallbackReason: family.fallbackReason }),
+    ...(sizeAdjust === undefined
+      ? {}
+      : { sizeAdjustedFrom: sizeAdjust.from, sizeAdjustBasis: sizeAdjust.basis }),
+  }
+  if (family.matchedOriginal) {
+    if (family.originalPostScriptName !== undefined) {
+      notes.push(`已沿用原文的字体家族 ${family.originalPostScriptName}。`)
+    }
+  } else if (family.originalPostScriptName !== undefined && family.fallbackReason !== undefined) {
+    notes.push(
+      `原文使用 ${family.originalPostScriptName}，但${family.fallbackReason}，`
+      + `已改用 ${basename(loaded.path)}，字面可能略有差异。`,
+    )
+  }
+  if (sizeAdjust !== undefined) {
+    notes.push(
+      `已按${sizeAdjust.basis}把字号从 ${sizeAdjust.from.toFixed(2)}pt 调整为 ${sizeAdjust.to.toFixed(2)}pt（估算），`
+      + '尽量对齐相邻文字的视觉高度。',
+    )
+  }
+
   const newWidth = measureTextWidth(font, options.text, size)
   const shiftSiblings = options.shiftSiblings !== false
   const tolerance = options.siblingTolerance ?? 1.2
@@ -1057,6 +1257,7 @@ export async function redrawTextLine(
     pageFontSize: size,
     blankedShows: blanked.blankedShows,
     fontPath: loaded.path,
+    fontChoice,
     ...(siblingShift === undefined ? {} : { siblingShift }),
     notes,
   }

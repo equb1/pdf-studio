@@ -823,11 +823,20 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
             : shift.failed.length > 0
               ? `相邻片段处理：${shift.failed.length} 个相邻片段无法安全平移（见下方注意）。`
               : '相邻片段处理：新文字没有变长，未移动相邻片段。'
+      const choice = result.fontChoice
+      const fontLine = choice.matched
+        ? `字体处理：沿用原文的字体家族${choice.originalPostScriptName === undefined ? '' : ` ${choice.originalPostScriptName}`}。`
+        : choice.originalPostScriptName === undefined
+          ? `字体处理：原文没有可识别的字体家族，使用 ${basename(choice.usedPath)}。`
+          : `字体处理：原文 ${choice.originalPostScriptName} 无法完整渲染新文字，已改用 ${basename(choice.usedPath)}`
+            + `${choice.sizeAdjustedFrom === undefined ? '' : `（并按${choice.sizeAdjustBasis}把字号估算调整为 ${result.pageFontSize.toFixed(2)}pt）`}，`
+            + '字面可能略有差异。'
       return {
         text: [
           `已生成：${output}`,
           `这一行改成了：${oneLine(text)}`,
           `被抹掉的原文：${oneLine(result.groupText) || '（无法解码）'}`,
+          fontLine,
           siblingLine,
           ...result.notes.map(note => `注意：${note}`),
         ].join('\n'),

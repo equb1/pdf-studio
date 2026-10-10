@@ -196,3 +196,112 @@ export async function resolveFontForText(
   // font, so this is only a hard failure for CJK.
   return wantCjk ? null : latinFallback
 }
+
+/* ── 沿用原文的字体家族 ───────────────────────────────────────────────────── */
+
+/**
+ * PostScript 名 → 系统字体文件。
+ *
+ * 为什么需要它：PDF 里的字体常常是"按名字引用、字体文件不内嵌"的（`/AUWCNV+TimesNewRomanPSMT`
+ * 这种），阅读器会用自己的 Times New Roman 去替换。重画这一段文字时，如果随手挑一个
+ * Arial Unicode 子集，字面就会明显偏大偏亮——字号算得再准也救不回来。
+ *
+ * 表里的键是**去掉了子集前缀**的 PostScript 名（见 {@link stripSubsetPrefix}）。
+ * 路径按 macOS 优先；其它平台命中不了就由调用方回退到 `resolveFontForText`。
+ */
+export const POSTSCRIPT_FONT_FILES: Readonly<Record<string, string>> = {
+  TimesNewRomanPSMT: '/System/Library/Fonts/Supplemental/Times New Roman.ttf',
+  TimesNewRomanPS: '/System/Library/Fonts/Supplemental/Times New Roman.ttf',
+  'TimesNewRomanPS-BoldMT': '/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf',
+  'TimesNewRomanPS-ItalicMT': '/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf',
+  'TimesNewRomanPS-BoldItalicMT': '/System/Library/Fonts/Supplemental/Times New Roman Bold Italic.ttf',
+  ArialMT: '/System/Library/Fonts/Supplemental/Arial.ttf',
+  ArialPSMT: '/System/Library/Fonts/Supplemental/Arial.ttf',
+  'Arial-BoldMT': '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+  'Arial-ItalicMT': '/System/Library/Fonts/Supplemental/Arial Italic.ttf',
+  'Arial-BoldItalicMT': '/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf',
+  ArialUnicodeMS: '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+  Helvetica: '/System/Library/Fonts/Helvetica.ttc',
+  HelveticaBold: '/System/Library/Fonts/Helvetica.ttc',
+}
+
+/**
+ * 去掉子集前缀与开头的斜杠。
+ *
+ * 子集字体的 `BaseFont` 形如 `/AUWCNV+TimesNewRomanPSMT`：前六个大写字母是子集标记，
+ * 同一个字体在不同 PDF 里会换成不同标记，所以拿它做家族判断前必须去掉。
+ */
+export function stripSubsetPrefix(name: string | undefined): string | undefined {
+  if (name === undefined) return undefined
+  const clean = name.replace(/^\//, '').trim()
+  const stripped = clean.replace(/^[A-Z]{6}\+/, '')
+  return stripped === '' ? undefined : stripped
+}
+
+/** 按 PostScript 名找系统字体文件（大小写不敏感；文件必须真实存在）。 */
+export function resolveSystemFontByPostScriptName(postScriptName: string): string | undefined {
+  const candidates = [postScriptName, postScriptName.replace(/-\d+$/, '')]
+  for (const candidate of candidates) {
+    const direct = POSTSCRIPT_FONT_FILES[candidate]
+    if (direct !== undefined && existsSync(direct)) return direct
+  }
+  const lowers = candidates.map(name => name.toLowerCase())
+  for (const [name, path] of Object.entries(POSTSCRIPT_FONT_FILES)) {
+    if (lowers.includes(name.toLowerCase()) && existsSync(path)) return path
+  }
+  return undefined
+}
+
+/**
+ * 用 fontkit 判断一个字体文件能否**完整**渲染 `text`。
+ *
+ * 逐码点检查 `glyphForCodePoint`：字形 id 为 0 表示走 .notdef（缺字）。中英混排里含中文时，
+ * 拉丁字体必然不满足，从而触发回退——这正是"不要把 Times 拿去画汉字"的那道闸。
+ */
+export async function fontCoversText(fontBytes: Uint8Array, text: string): Promise<boolean> {
+  const kit = await loadFontkitAdapter()
+  if (kit === null) return false
+  try {
+    const font = (kit.create as (data: Uint8Array) => {
+      glyphForCodePoint(codePoint: number): { id: number }
+    })(fontBytes)
+    for (const char of text) {
+      const codePoint = char.codePointAt(0) ?? 0
+      if (codePoint === 0x0a || codePoint === 0x0d) continue
+      if (font.glyphForCodePoint(codePoint).id === 0) return false
+    }
+    return true
+  } catch {
+    // 字体解析失败 = 不可用，交给调用方回退。
+    return false
+  }
+}
+
+/** 字体的纵向度量（相对 em），用于回退时把视觉高度对齐邻居。 */
+export interface FontVerticalMetrics {
+  unitsPerEm: number
+  /** x-height / unitsPerEm，缺失表示该字体没有可用度量。 */
+  xHeightRatio?: number
+  /** cap-height / unitsPerEm。 */
+  capHeightRatio?: number
+}
+
+/** 读一个字体文件的纵向度量；读不出来返回 `undefined`。 */
+export async function fontVerticalMetrics(fontBytes: Uint8Array): Promise<FontVerticalMetrics | undefined> {
+  const kit = await loadFontkitAdapter()
+  if (kit === null) return undefined
+  try {
+    const font = (kit.create as (data: Uint8Array) => {
+      unitsPerEm?: number
+      xHeight?: number
+      capHeight?: number
+    })(fontBytes)
+    const unitsPerEm = font.unitsPerEm !== undefined && font.unitsPerEm > 0 ? font.unitsPerEm : 1000
+    const metrics: FontVerticalMetrics = { unitsPerEm }
+    if (font.xHeight !== undefined && font.xHeight > 0) metrics.xHeightRatio = font.xHeight / unitsPerEm
+    if (font.capHeight !== undefined && font.capHeight > 0) metrics.capHeightRatio = font.capHeight / unitsPerEm
+    return metrics
+  } catch {
+    return undefined
+  }
+}

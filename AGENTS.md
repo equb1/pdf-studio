@@ -28,7 +28,7 @@
 |---|---|
 | 门控类别、planId 构成、计划库/状态机、策略语义、阈值（整档 OCR / 可搜索化共用 20 页门槛、巨型文档 200 页、计划有效期 15 分钟） | `src/core/confirmation.ts` |
 | 每个工具的 `authorize({...})` 调用点、`plan` / `confirm` / `force` 参数与默认值 | `src/host/tools.ts` |
-| 整行重绘的几何换算（CTM/Tm 追踪、页面坐标原点、页面字号）、抹除方式、跨组重排（同一视觉行兄弟组的 `Tm` 锚点平移、`shiftSiblings` 默认值、溢出判定），以及 `pdf_replace_line` 的参数与门控 | `src/core/line-redraw.ts`、`src/host/tools.ts` |
+| 整行重绘的几何换算（CTM/Tm 追踪、页面坐标原点、页面字号）、抹除方式、跨组重排（同一视觉行兄弟组的 `Tm` 锚点平移、`shiftSiblings` 默认值、溢出判定）、**重画字体家族的选择（`BaseFont` 去子集前缀 → 系统字体表、可渲染性检查、回退与字号估算）**，以及 `pdf_replace_line` 的参数与门控 | `src/core/line-redraw.ts`、`src/core/fonts.ts`、`src/host/tools.ts` |
 | `/api/pdf-studio/plans`、`.../{planId}/confirm`、`.../{planId}/cancel`、loopback 信任栅栏 | `src/host/routes.ts`、`src/host/http.ts` |
 | 两端注入（**仅 `surface: true` 时**：行表 + `tapIndex` 兜底 + 绝对 `apiBase`；`surface` 默认 false，页面默认无浮层）、`requireConfirmation` / `DSH_PDF_STUDIO_CONFIRM`（只管确认策略） | `src/index.ts` |
 | 浮层「待确认操作」卡片、3 秒轮询、`window.__dshPdfStudioStop()`（浮层可选；确认主路径是纯文本确认单） | `public/app.js` |
