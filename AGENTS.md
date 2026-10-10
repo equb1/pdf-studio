@@ -11,9 +11,9 @@
 
 | 命令 | 作用 |
 |---|---|
-| `npm run commit` | **交互式提交助手**：读取暂存区、按路径推荐 type/scope、拼出规范中文消息、自检后提交 |
+| `npm run commit` | **交互式提交助手**：读取暂存区、按路径推荐 type/scope、拼出规范中文消息、自检后提交。自动草稿以 `src/**` 的改动为准（按变更行数定主导模块，`test`/`docs` 抢不走 scope；scope 与 type 相同时省略 scope，不产出 `test(test)`）；**二进制文件与 `test/fixtures/**` 不作为标题素材**，推断不出有意义的标题时会拒绝并要求显式 `--subject`，不会生成"新增 N 个文件"或 `新增a测试` 式的空话 |
 | `npm run commit -- --type fix --scope watermark --subject "修正居中定位"` | 非交互式；加 `--print` 只打印不提交 |
-| `npm run commit:lint` | 只校验一条消息（`--message "…"` 或 `--file .git/COMMIT_EDITMSG`） |
+| `npm run commit:lint` | 只校验一条消息（`--message "…"` 或 `--file .git/COMMIT_EDITMSG`）。**裸 `--staged`（不带值）与完全不给 `--staged` 一样，都会自动读 `git diff --cached --name-only`**，只有显式给了路径列表才用该列表（否则 R2 会静默失效）。规则：R1 空话标题 / R2 scope 与暂存区不一致 / R3 标题像文件名碎片 |
 | `npm run hooks:install` | 启用 commit-msg 钩子（`git config core.hooksPath scripts/hooks`），不合规的提交会被**拦下** |
 | `npm run hooks:check` | 查看钩子是否生效 |
 
@@ -51,5 +51,6 @@ npm run test:confirm-ui     # 浮层卡片（浮层可选开启）
 npm run test:plugin-wiring  # 工具注册 + 注入（默认关闭 / surface:true）+ 策略透传
 npm run test:line-redraw    # 整行重绘：几何换算 / 抹除 / 不重叠 / 确认令牌 / 错误路径
 npm run test:page-assembly  # 页级装配：拆分 / 裁剪 / 重排 / 合并（含真实 canvas 回拼比对）
+npm run test:commit-tools   # 提交工具：自动草稿推断优先级 / 夹具不编标题 / R1+R2（含裸 --staged）+ R3
 ```
 

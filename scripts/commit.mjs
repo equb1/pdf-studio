@@ -7,16 +7,21 @@
  * 这个脚本自己读 `git diff --cached`，给出 type/scope 建议，拼出规范消息，并在提交前用
  * `scripts/commit-lint.mjs`（与 commit-msg 钩子同一套规则）自检。
  *
+ * 自动草稿以 `src/**` 的改动为准（见 `scripts/commit-suggest.mjs`）；如果从暂存区推断不出
+ * 有意义的标题（例如只改了图片/夹具），**不会编一个"更新 N 个文件"式的空话**：
+ * `--auto` / 非交互模式直接报错退出，交互模式则要求你显式输入。
+ *
  * 用法：
  *   npm run commit                                   # 交互式（推荐）
  *   npm run commit -- --type fix --scope watermark --subject "修正居中定位" --print
  *   npm run commit -- --subject "补充提交规范工具" --body "新增 commit-lint 与提交助手" --yes
  *   npm run commit -- --amend                        # 修订上一次提交（沿用其类型与 scope）
  *
- * 选项：--type --scope --subject --body（可重复）--footer --amend --print --yes --no-verify --all
+ * 选项：--type --scope --subject --body（可重复）--footer --amend --print --yes --no-verify --all --auto
  *   --all     先 `git add -A` 再提交（默认只提交已暂存内容）
  *   --print   只打印将要提交的信息，不真的提交
  *   --yes     不再逐项确认（仍会跑规范校验）
+ *   --auto    直接采用自动草稿（推断不出标题时报错退出，要求显式 --subject）
  *
  * @module dsh-pdf-studio/scripts/commit
  */
@@ -24,13 +29,17 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
-import { ALLOWED_TYPES, TYPE_LABELS, validateMessage } from './commit-lint.mjs'
+import { ALLOWED_TYPES, TYPE_LABELS, lintMessage } from './commit-lint.mjs'
 import { buildAiSuggestion, buildSuggestion } from './commit-suggest.mjs'
 
 const git = (args, { input } = {}) =>
   execFileSync('git', args, { encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'] }).trimEnd()
+
+/** 给 commit-suggest 用的 git 执行器：返回原始 stdout（不 trim），让它自己解析。 */
+const rawGit = (args) =>
+  execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
 
 const tryGit = (args) => {
   try {
@@ -53,37 +62,6 @@ function stagedChanges() {
     files.push(rest[rest.length - 1])
   }
   return { files, statuses, raw }
-}
-
-const DOCS = /^(README|AGENTS|GEMINI|CHANGES|docs\/)/
-const BUILD = /^(package\.json|package-lock\.json|pnpm-lock\.yaml|\.gitignore|cordis\.patch\.yml|tsconfig)/
-// `scripts/` 是仓库自己的工具链，单独给一个比 "build" 更好读的 scope。
-const SCRIPTS = /^scripts\//
-
-/** 单个文件 → 建议的 scope。 */
-function fileScope(path) {
-  if (path.startsWith('test/')) return 'test'
-  if (path.startsWith('src/core/')) return basename(path).replace(/\.[^.]+$/, '')
-  if (path.startsWith('src/host/')) return basename(path).replace(/\.[^.]+$/, '')
-  if (path.startsWith('src/')) return 'src'
-  if (DOCS.test(path)) return 'docs'
-  if (SCRIPTS.test(path)) return 'scripts'
-  if (BUILD.test(path)) return 'build'
-  return path.split('/')[0]
-}
-
-function suggestScope(files) {
-  const tally = new Map()
-  for (const file of files) tally.set(fileScope(file), (tally.get(fileScope(file)) ?? 0) + 1)
-  return [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
-}
-
-function suggestType(files, statuses) {
-  if (files.length > 0 && files.every(file => file.startsWith('test/'))) return 'test'
-  if (files.length > 0 && files.every(file => DOCS.test(file))) return 'docs'
-  if (files.length > 0 && files.every(file => BUILD.test(file) || SCRIPTS.test(file))) return 'build'
-  if (statuses.includes('A')) return 'feat'
-  return 'fix'
 }
 
 /** 上次提交的 type/scope，给 --amend 用。 */
@@ -154,12 +132,21 @@ const HELP = `用法：npm run commit -- [选项]
   --subject "中文描述"   必填，必须是中文
   --body "段落"          可重复，作为正文
   --footer "脚注"        例如 BREAKING CHANGE: … 或 Refs: #12
-  --auto                直接采用自动生成的草稿（不再逐项询问）\n  --amend                修订上一次提交（沿用其 type/scope）
+  --auto                 直接采用自动生成的草稿（不再逐项询问）
+  --amend                修订上一次提交（沿用其 type/scope）
   --all                  提交前先 git add -A
   --print                只打印消息，不提交
   --yes                  不再逐项确认
   --no-verify            跳过 commit-msg 钩子（规范校验）
   -h, --help             显示本帮助
+
+自动草稿的规则：按"路径层 + 变更行数"定主导改动，src/** 优先于 public/scripts/配置，
+test/docs 只在没有 src/public 改动时才配当 scope；标题永远是"动词 + 模块中文名 + 能力"
+（例如 \`新增页级装配能力\`），不会写成"新增 N 个文件"；scope 与 type 相同时省略 scope
+（不产出 \`test(test)\`）。二进制文件与 \`test/fixtures/**\` **不作为标题素材**。
+若从暂存区推断不出有意义的标题（例如只改了图片/夹具），**不会编一个空话标题**：
+--auto / 非交互模式直接报错退出，交互模式则要求你显式输入 --subject。
+（\`npm run commit:lint\` 的裸 \`--staged\` 与不给 \`--staged\` 一样，都会自动读暂存区。）
 `
 
 async function main() {
@@ -174,22 +161,24 @@ async function main() {
     process.stdout.write('已执行 git add -A\n')
   }
 
-  const { files, statuses, raw } = stagedChanges()
+  const { files, raw } = stagedChanges()
   if (files.length === 0) {
     process.stdout.write('暂存区为空，先 `git add <文件>`（或用 `npm run commit -- --all`）。\n')
     return 1
   }
 
   // 先让生成器给出草稿（配了 COMMIT_MSG_AI_CMD 就是 AI 生成的，否则是离线规则生成）。
+  // 显式 `--type` 作为 typeHint 传进去，标题会跟着写成"修正…"而不是瞎猜。
   const previous = options.amend ? lastCommitParts() : { type: '', scope: '', header: '' }
-  const ai = buildAiSuggestion()
-  const draft = ai ?? buildSuggestion()
-  const suggestedScope = options.scope !== '' ? options.scope : (draft.scope !== '' ? draft.scope : suggestScope(files))
-  const suggestedType = draft.type !== '' ? draft.type : suggestType(files, statuses)
+  const ai = buildAiSuggestion({ runGit: rawGit })
+  const draft = ai ?? buildSuggestion({ runGit: rawGit, typeHint: options.type })
+  const suggestedScope = options.scope !== '' ? options.scope : draft.scope
+  const suggestedType = draft.type !== '' ? draft.type : 'fix'
+  const hasDraft = draft.empty !== true && draft.inscrutable !== true && draft.subject !== ''
 
   process.stdout.write('\n暂存区改动：\n')
   process.stdout.write(raw.split('\n').map(line => `  ${line}`).join('\n') + '\n')
-  if (draft.empty !== true) {
+  if (hasDraft) {
     const draftHeader = `${draft.type}${draft.scope === '' ? '' : `(${draft.scope})`}: ${draft.subject}`
     process.stdout.write(`\n自动生成的草稿（来源：${ai === undefined ? '离线规则' : 'AI 命令'}）：\n`)
     process.stdout.write(`  ${draftHeader}\n`)
@@ -197,6 +186,9 @@ async function main() {
       process.stdout.write(draft.body.split('\n').map(line => `  ${line}`).join('\n') + '\n')
     }
     process.stdout.write('（回车即采用草稿；也可以逐项改写）\n')
+  } else if (draft.inscrutable === true) {
+    process.stdout.write(`\n⚠️  无法从暂存区推断有意义的提交标题：${draft.reason}。\n`)
+    process.stdout.write('    请显式指定标题（--subject）。\n')
   }
   process.stdout.write('\n')
 
@@ -248,7 +240,15 @@ async function main() {
       }
     }
     if (subject === '') {
-      process.stdout.write('缺少 --subject，且当前不是交互终端。\n')
+      if (draft.inscrutable === true) {
+        process.stdout.write(
+          `❌ 无法从暂存区推断有意义的提交标题：${draft.reason}。\n`
+          + '   请显式传 --subject "…"，例如：\n'
+          + '     npm run commit -- --type fix --scope watermark --subject "修正居中定位"\n',
+        )
+      } else {
+        process.stdout.write('缺少 --subject，且当前不是交互终端。\n')
+      }
       return 1
     }
 
@@ -273,8 +273,8 @@ async function main() {
     const header = `${type}${scope === '' ? '' : `(${scope})`}${breaking}: ${subject}`
     const message = [header, ...(bodyLines.length > 0 ? ['', ...bodyLines] : []), ...(footer === '' ? [] : ['', footer])].join('\n')
 
-    // ── 自检（与钩子同一套规则）────────────────────────────────────────────
-    const result = validateMessage(message)
+    // ── 自检（与钩子同一套规则，含"空话标题"与"scope 与暂存区不一致"）───────
+    const result = lintMessage(message, { stagedPaths: files })
     process.stdout.write('\n将要提交的信息：\n')
     process.stdout.write(message.split('\n').map(line => `  │ ${line}`).join('\n') + '\n\n')
     for (const warning of result.warnings) process.stdout.write(`⚠️  ${warning}\n`)

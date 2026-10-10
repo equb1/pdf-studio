@@ -3,6 +3,8 @@
 #
 # 由 `node scripts/install-hooks.mjs` 通过 `git config core.hooksPath scripts/hooks` 启用，
 # 规则实现只有一份：scripts/commit-lint.mjs（提交助手 scripts/commit.mjs 也用它自检）。
+# 除了格式，还查两条：R1 空话标题（`新增 7 个文件`）、R2 scope 与暂存区不一致
+# （有 src/** 改动却把 scope 写成 test/docs）——暂存区上下文由 commit-lint 自己读，钩子不需要传。
 #
 # 想临时绕过：git commit --no-verify
 set -u
