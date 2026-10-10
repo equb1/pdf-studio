@@ -329,6 +329,12 @@ function optionalBoolean(args: Record<string, unknown>, key: string): boolean {
   return args[key] === true
 }
 
+/** Read an optional number argument, rejecting values that are not finite. */
+function optionalNumber(args: Record<string, unknown>, key: string): number | undefined {
+  const value = args[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 /**
  * Resolve the input path and verify it looks like a PDF.
  *
@@ -872,7 +878,9 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
     name: 'pdf_watermark',
     description:
       '水印三合一。action=add 添加文字或图片水印；action=scan 查找已有水印（返回置信度与依据，不改文件）；'
-      + 'action=remove 移除能确认的水印。'
+      + 'action=remove 移除能确认的水印（默认只动置信度 ≥ 0.9 的候选）。'
+      + 'scan 会把「看到了但不敢删」的对象单独列出来（例如被标成 /Artifact<</Subtype/Header>> 的页眉类对象，'
+      + '置信度 0.7）：确认那是水印后，用 minConfidence=0.7 让 remove 一并清掉。'
       + '默认 render=text（真实文字，可被搜索/复制）；若水印不应进入文字层（例如内部资料、机密标记），'
       + '用 render=outline 把同样字形画成矢量路径，外观一致但无法被文本提取。'
       + '注意：栅格化进页面图片的水印、或当正文绘制的水印，无法可靠移除，scan 会说明原因。',
@@ -883,7 +891,12 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         type: 'string',
         required: true,
         enum: ['add', 'scan', 'remove'],
-        description: 'add 添加；scan 只查找不改动；remove 移除高置信度水印。',
+        description: 'add 添加；scan 只查找不改动；remove 移除置信度达标的候选水印。',
+      },
+      minConfidence: {
+        type: 'number',
+        description: 'action=remove 的删除门槛，默认 0.9。scan 里报为「页眉/页脚类 /Artifact 对象」的候选'
+          + '置信度是 0.7，只有显式传 0.7（或更低）才会被删除——这是刻意留给人确认的一步。',
       },
       text: { type: 'string', description: 'action=add 时的水印文字（与 imagePath 二选一）。' },
       imagePath: { type: 'string', description: 'action=add 时用图片作水印（PNG/JPEG 路径，与 text 二选一）。' },
@@ -930,13 +943,37 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
 
       if (action === 'scan') {
         const report = await reportWatermarks(source)
-        const lines = [`共 ${report.pages} 页，找到 ${report.candidates.length} 个可移除候选：`]
-        for (const candidate of report.candidates) {
-          lines.push(
-            `  第${candidate.page}页｜${Math.round(candidate.confidence * 100)}%｜${candidate.detail}`,
-          )
+        // 分两段说：默认就会被删的（≥ 0.9），和"看到了但要人点头"的（< 0.9）。
+        // 混在一起报会让用户以为 remove 会照单全删，而它不会。
+        const confident = report.candidates.filter(candidate => candidate.confidence >= 0.9)
+        const unsure = report.candidates.filter(candidate => candidate.confidence < 0.9)
+        const lines: string[] = []
+        if (unsure.length === 0) {
+          // 只有这一类时保持原来的说法：别把"找到 N 个"和"没找到"写进同一次回答。
+          lines.push(`共 ${report.pages} 页，找到 ${report.candidates.length} 个可移除候选：`)
+          for (const candidate of confident) {
+            lines.push(
+              `  第${candidate.page}页｜${Math.round(candidate.confidence * 100)}%｜${candidate.detail}`,
+            )
+          }
+          if (confident.length === 0) lines.push('  （没有找到按结构可识别的水印）')
+        } else {
+          lines.push(`共 ${report.pages} 页，找到 ${report.candidates.length} 个候选：`
+            + `其中 ${confident.length} 个达到默认删除门槛 0.9，${unsure.length} 个需要你确认。`)
+          for (const candidate of confident) {
+            lines.push(
+              `  第${candidate.page}页｜${Math.round(candidate.confidence * 100)}%｜${candidate.detail}`,
+            )
+          }
+          lines.push(`另有 ${unsure.length} 个候选置信度低于默认删除门槛 0.9，需要你确认后才会删除：`)
+          for (const candidate of unsure) {
+            lines.push(
+              `  第${candidate.page}页｜${Math.round(candidate.confidence * 100)}%｜${candidate.detail}`,
+            )
+          }
+          const lowest = Math.min(...unsure.map(candidate => candidate.confidence))
+          lines.push(`  确认这些确实是水印，就用 minConfidence=${lowest} 重跑 action=remove。`)
         }
-        if (report.candidates.length === 0) lines.push('  （没有找到按结构可识别的水印）')
         for (const refused of report.refused) {
           lines.push(`无法处理 · 第${refused.page}页：${refused.detail}`)
         }
@@ -945,23 +982,33 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
 
       if (action === 'remove') {
         const output = resolveOutput(source, args, '-clean', options.workspaceRoot)
+        // 门槛是本次执行的一部分，所以它必须进确认单：计划说 0.9、执行却按 0.7 删，
+        // 就等于用户确认了一件与实际发生的事不同的操作。
+        const requested = optionalNumber(args, 'minConfidence')
+        if (requested !== undefined && (requested < 0 || requested > 1)) {
+          throw new Error(`minConfidence 必须在 0..1 之间，收到 ${requested}`)
+        }
+        const minConfidence = requested ?? 0.9
         // 这里不预扫一遍水印：真正执行时引擎自己会扫，再扫一次只是白花时间。
-        // 计划只声明"移除全部高置信度候选"，而这与文件指纹一一对应，planId 依然稳定。
+        // 计划只声明"移除置信度达标的候选"，而这与文件指纹一一对应，planId 依然稳定。
         const gate = authorize({
           tool: 'pdf_watermark',
           action: 'remove',
-          parameters: { candidates: '全部高置信度候选（置信度 ≥ 0.9）' },
+          parameters: {
+            candidates: `全部候选（置信度 ≥ ${minConfidence}）`,
+            置信度门槛: minConfidence,
+          },
           inputs: [source],
           output,
           hints: ['只想删某几页就说「只删第 1 页」', '想先看候选清单就先跑 action=scan'],
-          effects: ['不修改源文件，结果写入新的 PDF', '只移除能自证的水印（低置信度候选会被保留）'],
+          effects: ['不修改源文件，结果写入新的 PDF', `只移除置信度 ≥ ${minConfidence} 的候选（更低的会被保留）`],
           ...confirmationArgs(options, args),
         })
         if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
         if (gate.kind === 'refused') throw new Error(gate.message)
-        const result = await stripWatermarks(source, output, { dryRun: false })
+        const result = await stripWatermarks(source, output, { dryRun: false, minConfidence })
         if (result.dryRun) {
-          return { text: `没有可移除的高置信度水印，文件未改动。跳过 ${result.skipped.length} 个低置信度候选。` }
+          return { text: `没有置信度 ≥ ${minConfidence} 的可移除水印，文件未改动。跳过 ${result.skipped.length} 个低置信度候选。` }
         }
         const lines = [
           `已生成：${result.outputPath}`,

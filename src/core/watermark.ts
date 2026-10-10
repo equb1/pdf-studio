@@ -878,6 +878,14 @@ export type WatermarkReason =
    * `/Artifact << … /Subtype /Watermark … >> BDC … EMC` block.
    */
   | 'artifact-wrapper'
+  /**
+   * The page content stream draws it inside a page-decoration artifact
+   * (`/Artifact << … /Subtype /Header|/Footer|/Pagination … >> BDC … EMC`)
+   * instead of a `/Watermark` one, and the object itself carries all three
+   * mark-shaped traits: a text-only body, a `/BBox` covering a sliver of the
+   * page, and the same resource invoked on several pages.
+   */
+  | 'pagination-artifact'
   /** Invoked through a Form XObject with no name, but a mark-like body. */
   | 'invisible-xobject'
   /** Drawn inline with a non-trivial rotation. */
@@ -945,22 +953,48 @@ function hasAdobeWatermarkPieceInfo(dict: PDFDict, context: ContextLike): boolea
 }
 
 /**
- * Whether one `BDC` operand run opens an `/Artifact` whose `/Subtype` is
- * `/Watermark`.
+ * `/Artifact` subtypes that tag **page decoration** rather than body copy.
+ *
+ * A mark that a publishing site stamps on every page is often written as a
+ * `Header` artifact rather than a `Watermark` one (the tool that produced it
+ * treats the line as running furniture). `/Watermark` is deliberately absent:
+ * it is conclusive on its own and handled before this set is consulted.
+ */
+const PAGE_DECORATION_SUBTYPES = new Set(['/Header', '/Footer', '/Pagination'])
+
+/**
+ * Confidence for a page-decoration artifact that also looks like a mark.
+ *
+ * Below the `0.9` removal threshold on purpose: a real running header is a
+ * `Header` artifact with a text-only body, so repetition and a small `/BBox`
+ * narrow the field without ever proving the case. The candidate is reported so
+ * the user can say "yes, those are the watermark"; it is never removed silently.
+ */
+const PAGINATION_ARTIFACT_CONFIDENCE = 0.7
+
+/** A mark must repeat on at least this many pages to be judged page furniture. */
+const PAGINATION_MARK_MIN_PAGES = 2
+
+/** Above this share of the visible page area, the object is furniture, not a mark. */
+const PAGINATION_MARK_MAX_AREA_RATIO = 0.05
+
+/**
+ * The `/Subtype` of the artifact one `BDC` operand run opens, or `undefined`.
  *
  * The properties dictionary may be written inline
  * (`/Artifact<</Subtype/Watermark/Type/Pagination>> BDC`) or as an indirect
  * reference (`/Artifact 12 0 R BDC`). The indirect form is resolved through the
- * document context; if it cannot be resolved the answer is "no", never a guess.
+ * document context; if it cannot be resolved the answer is `undefined`, never a
+ * guess.
  */
-function artifactWatermarkOperands(operands: readonly Token[], context: ContextLike): boolean {
+function artifactSubtypeOf(operands: readonly Token[], context: ContextLike): string | undefined {
   const tag = operands.find(token => token.kind === 'name' && token.raw === '/Artifact')
-  if (tag === undefined) return false
+  if (tag === undefined) return undefined
 
   const dictToken = operands.find(token => token.kind === 'dict')
   if (dictToken !== undefined) {
     // `tokenize` returns a whole `<< … >>` as ONE dict token, so the braces are
-    // stripped before reading the keys. `/Subtype` and `/Watermark` may be
+    // stripped before reading the keys. `/Subtype` and its value may be
     // separated by any whitespace and either may sit next to other keys, so
     // match the adjacent name TOKENS.
     const inner = dictToken.raw.startsWith('<<') && dictToken.raw.endsWith('>>')
@@ -968,35 +1002,45 @@ function artifactWatermarkOperands(operands: readonly Token[], context: ContextL
       : dictToken.raw
     const names = tokenize(inner).filter(token => token.kind === 'name')
     for (let i = 0; i < names.length - 1; i += 1) {
-      if (names[i].raw === '/Subtype' && names[i + 1].raw === '/Watermark') return true
+      if (names[i].raw === '/Subtype') return names[i + 1].raw
     }
-    return false
+    return undefined
   }
 
   // Indirect form. The tokeniser classifies `R` as an unknown operator, which is
-  // why `artifactWrappedNames` keeps it in the operand run.
+  // why `artifactWrappedInvocations` keeps it in the operand run.
   const refIndex = operands.findIndex(token => token.kind === 'operator' && token.raw === 'R')
-  if (refIndex < 2) return false
+  if (refIndex < 2) return undefined
   const objectNumber = operands[refIndex - 2]
   const generationNumber = operands[refIndex - 1]
-  if (objectNumber.kind !== 'number' || generationNumber.kind !== 'number') return false
+  if (objectNumber.kind !== 'number' || generationNumber.kind !== 'number') return undefined
   const target = context.lookup(PDFRef.of(Number(objectNumber.raw), Number(generationNumber.raw)))
-  if (!(target instanceof PDFDict)) return false
+  if (!(target instanceof PDFDict)) return undefined
   const subtype = context.lookup(target.get(PDFName.of('Subtype')))
-  return subtype instanceof PDFName && subtype.asString() === '/Watermark'
+  return subtype instanceof PDFName ? subtype.asString() : undefined
 }
 
 /**
- * Resource names whose `Do` sits inside an `/Artifact … /Watermark … BDC … EMC`
- * block, read straight from the page content stream.
- *
- * This is a generic signal — the page itself declares the invocation to be a
- * watermark artifact — and it is what makes an Adobe mark detectable even when
- * its XObject carries no name of ours and its body is a single `Tj`.
+ * Whether one `BDC` operand run opens an `/Artifact` whose `/Subtype` is
+ * `/Watermark`.
  */
-function artifactWrappedNames(text: string, context: ContextLike): Set<string> {
-  const names = new Set<string>()
-  const open: boolean[] = []
+function artifactWatermarkOperands(operands: readonly Token[], context: ContextLike): boolean {
+  return artifactSubtypeOf(operands, context) === '/Watermark'
+}
+
+/**
+ * Every `Do` that sits inside a *named-subtype* `/Artifact … BDC … EMC` block,
+ * as resource name → the artifact subtypes it was drawn under.
+ *
+ * This is a generic signal — the page itself declares the invocation to be an
+ * artifact — and it is what makes an Adobe mark detectable even when its XObject
+ * carries no name of ours and its body is a single `Tj`. Returning the subtype
+ * (rather than a boolean) is what lets the caller separate the conclusive
+ * `/Watermark` case from the merely suggestive page-decoration one.
+ */
+function artifactWrappedInvocations(text: string, context: ContextLike): Map<string, string[]> {
+  const found = new Map<string, string[]>()
+  const open: Array<string | undefined> = []
   let operands: Token[] = []
   for (const token of tokenize(text)) {
     // `R` is the indirect-reference operator, not a content operator: leaving it
@@ -1006,16 +1050,93 @@ function artifactWrappedNames(text: string, context: ContextLike): Set<string> {
       continue
     }
     if (token.raw === 'BDC' || token.raw === 'BMC') {
-      open.push(token.raw === 'BDC' && artifactWatermarkOperands(operands, context))
+      // `BMC` carries a tag but no properties dictionary, so it names no subtype.
+      open.push(token.raw === 'BDC' ? artifactSubtypeOf(operands, context) : undefined)
     } else if (token.raw === 'EMC') {
       open.pop()
-    } else if (token.raw === 'Do' && open[open.length - 1] === true) {
-      const name = operands.filter(token2 => token2.kind === 'name').pop()
-      if (name !== undefined) names.add(name.raw.replace(/^\//, ''))
+    } else if (token.raw === 'Do') {
+      const subtype = open[open.length - 1]
+      if (subtype !== undefined) {
+        const name = operands.filter(token2 => token2.kind === 'name').pop()
+        if (name !== undefined) {
+          const key = name.raw.replace(/^\//, '')
+          const subtypes = found.get(key) ?? []
+          subtypes.push(subtype)
+          found.set(key, subtypes)
+        }
+      }
     }
     operands = []
   }
-  return names
+  return found
+}
+
+/** Operators that paint geometry; a mark made of text has none of them. */
+const PATH_OPERATORS = new Set([
+  'm', 'l', 'c', 'v', 'y', 'h', 're',
+  'S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*', 'n',
+  'W', 'W*', 'sh', 'BI', 'ID', 'EI',
+])
+
+/**
+ * Whether an artifact-wrapped Form XObject is shaped like a mark.
+ *
+ * Three conditions, all required, none of them sufficient on its own — which is
+ * exactly why the verdict is a medium-confidence candidate and not a silent
+ * deletion:
+ *
+ *   1. **Text only.** The body shows glyphs and paints no geometry and invokes
+ *      no nested object. A page header assembled from rules and logos fails here.
+ *   2. **A sliver of the page.** The `/BBox` covers at most
+ *      `PAGINATION_MARK_MAX_AREA_RATIO` of the visible page.
+ *   3. **Substance.** The body actually draws something; an empty artifact
+ *      wrapper is debris, not a watermark.
+ *
+ * Repetition across pages is the third trait, and it is decided by the caller
+ * because it is a property of the document rather than of one page.
+ */
+function paginationMarkVerdict(
+  page: { getCropBox(): { width: number; height: number } },
+  dict: PDFDict,
+  body: string,
+  context: ContextLike,
+): { ok: boolean; why: string } {
+  const operations = parseOperations(tokenize(body))
+  const paints = operations.filter(op => PATH_OPERATORS.has(op.op))
+  if (paints.length > 0) {
+    return { ok: false, why: `它的内容流里有 ${paints.length} 个绘制几何图形的算子（${paints[0].op}），不是纯文字对象` }
+  }
+  if (operations.some(op => op.op === 'Do')) {
+    return { ok: false, why: '它会调用别的 XObject，不是纯文字对象' }
+  }
+  const draws = operations.some(op => op.op === 'Tj' || op.op === 'TJ' || op.op === "'" || op.op === '"')
+  if (!draws) return { ok: false, why: '它没有画出任何文字' }
+
+  const bboxRaw = dict.get(PDFName.of('BBox'))
+  const bbox = bboxRaw === undefined ? undefined : context.lookup(bboxRaw)
+  if (!(bbox instanceof PDFArray) || bbox.size() < 4) {
+    return { ok: false, why: '它没有 /BBox，无法判断它占多大' }
+  }
+  const numbers = [0, 1, 2, 3].map(i => {
+    const value = context.lookup(bbox.get(i))
+    return value instanceof PDFNumber ? value.asNumber() : Number.NaN
+  })
+  if (numbers.some(value => !Number.isFinite(value))) {
+    return { ok: false, why: '它的 /BBox 不是四个数字' }
+  }
+  const area = Math.abs(numbers[2] - numbers[0]) * Math.abs(numbers[3] - numbers[1])
+  const pageBox = page.getCropBox()
+  const pageArea = Math.abs(pageBox.width * pageBox.height)
+  if (!(pageArea > 0)) return { ok: false, why: '页面可见区域面积为零，无法比较' }
+  const ratio = area / pageArea
+  if (ratio > PAGINATION_MARK_MAX_AREA_RATIO) {
+    const percent = (ratio * 100).toFixed(1)
+    return {
+      ok: false,
+      why: `它占了页面 ${percent}%，超过 ${PAGINATION_MARK_MAX_AREA_RATIO * 100}% 上限，更像版面元素而不是水印`,
+    }
+  }
+  return { ok: true, why: '' }
 }
 
 /**
@@ -1023,20 +1144,25 @@ function artifactWrappedNames(text: string, context: ContextLike): Set<string> {
  *
  * ## Detection strategy, and its honest limits
  *
- * Four signals are used, in decreasing order of reliability:
+ * Five signals are used, in decreasing order of reliability:
  *
  * 1. **A Form XObject invocation with a self-declared identity.** A name of ours
  *    (`/Name` containing `WATERMARK_MARKER`) is conclusive, and so is Acrobat's
  *    own `/PieceInfo << /ADBE_CompoundType << /Private /Watermark >> >>`, which
  *    is how Adobe-style marks identify themselves.
- * 2. **An `/Artifact` wrapper in the page content stream.** A `Do` inside
- *    `/Artifact << … /Subtype /Watermark … >> BDC … EMC` is declared decoration
- *    by the file itself — a structural signal that does not depend on how many
- *    operators the target happens to contain.
- * 3. **An unnamed XObject with a mark-like body.** Judged by constant alpha plus
+ * 2. **A `/Watermark` artifact wrapper in the page content stream.** A `Do`
+ *    inside `/Artifact << … /Subtype /Watermark … >> BDC … EMC` is declared
+ *    decoration by the file itself — a structural signal that does not depend on
+ *    how many operators the target happens to contain.
+ * 3. **A page-decoration artifact that looks like a mark.** The same wrapper
+ *    with `/Subtype /Header` (or `/Footer`, `/Pagination`): how publishing sites
+ *    stamp a "search us on WeChat" line, and how this signal was found missing.
+ *    It is reported at `PAGINATION_ARTIFACT_CONFIDENCE` — below the default
+ *    removal threshold — because a genuine running header has the same shape.
+ * 4. **An unnamed XObject with a mark-like body.** Judged by constant alpha plus
  *    at least one drawing operator, at a low confidence only, because an
  *    ordinary illustration can have the same shape.
- * 4. **Rotated inline text.** A rotation is rare in body copy and near-universal
+ * 5. **Rotated inline text.** A rotation is rare in body copy and near-universal
  *    in diagonal watermarks, so a text block drawn under a non-trivial `cm`
  *    rotation is reported — at a lower confidence, because a rotated heading is
  *    also a legitimate design.
@@ -1046,13 +1172,31 @@ function artifactWrappedNames(text: string, context: ContextLike): Set<string> {
  * page by these signals, and reporting them would produce either no candidates
  * or false positives that damage real content. They are surfaced in `refused`
  * with the reason, so the UI can tell the user the truth instead of showing an
- * empty list.
+ * empty list — and so is every artifact-wrapped object that was seen and judged
+ * *not* to be a watermark, which used to be dropped in silence.
  */
 export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> {
   const doc = await PDFDocument.load(bytes, { updateMetadata: false })
   const candidates: WatermarkCandidate[] = []
   const refused: WatermarkScan['refused'] = []
   const pages = doc.getPages()
+
+  /**
+   * Mark-shaped page-decoration artifacts, held back until the whole document
+   * has been read: "repeats across pages" is a property of the file, not of one
+   * page, so a single-page sighting cannot be judged while walking pages.
+   */
+  const deferred: Array<{ key: string; page: number; subtype: string; candidate: WatermarkCandidate }> = []
+  /** Objects that were seen and judged not to be watermarks, per page. */
+  const nearMiss = new Map<number, string[]>()
+  /** Per-page facts needed for the honest "nothing found here" note. */
+  const pageFacts: Array<{ page: number; hasText: boolean }> = []
+
+  const noteNearMiss = (page: number, detail: string): void => {
+    const list = nearMiss.get(page) ?? []
+    list.push(detail)
+    nearMiss.set(page, list)
+  }
 
   for (const [index, page] of pages.entries()) {
     const pageNumber = index + 1
@@ -1065,7 +1209,7 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
 
     // ── 1. XObject invocations ─────────────────────────────────────────────
     const invoked = new Map<string, number>()
-    const artifactWrapped = new Set<string>()
+    const artifactWrapped = new Map<string, string[]>()
     for (const stream of streams) {
       const operations = parseOperations(tokenize(stream.text))
       for (const op of operations) {
@@ -1075,8 +1219,8 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
         const key = name.raw.replace(/^\//, '')
         invoked.set(key, (invoked.get(key) ?? 0) + 1)
       }
-      for (const name of artifactWrappedNames(stream.text, doc.context as never)) {
-        artifactWrapped.add(name)
+      for (const [name, subtypes] of artifactWrappedInvocations(stream.text, doc.context as never)) {
+        artifactWrapped.set(name, [...(artifactWrapped.get(name) ?? []), ...subtypes])
       }
     }
 
@@ -1120,7 +1264,7 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
         continue
       }
 
-      if (artifactWrapped.has(name)) {
+      if (artifactWrapped.get(name)?.includes('/Watermark') === true) {
         candidates.push({
           page: pageNumber,
           kind: 'xobject',
@@ -1130,6 +1274,36 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
           detail: `该 XObject 由 /Artifact<</Subtype/Watermark>> … BDC … EMC 包裹绘制，`
             + `是文件自述的装饰对象（页面通过 /${name} 调用，出现 ${count} 次）`,
         })
+        continue
+      }
+
+      // A page-decoration artifact (`/Header`, `/Footer`, `/Pagination`) is how
+      // a publishing site stamps its own line onto every page, and it is NOT
+      // conclusive: a genuine running header carries the very same tag. It only
+      // becomes a candidate when the object itself is mark-shaped, and even then
+      // at a confidence below the default removal threshold.
+      const decoration = (artifactWrapped.get(name) ?? []).find(subtype => PAGE_DECORATION_SUBTYPES.has(subtype))
+      if (decoration !== undefined) {
+        const verdict = paginationMarkVerdict(page as never, dict, body, doc.context as never)
+        if (verdict.ok) {
+          deferred.push({
+            key: name,
+            page: pageNumber,
+            subtype: decoration,
+            candidate: {
+              page: pageNumber,
+              kind: 'xobject',
+              reason: 'pagination-artifact',
+              confidence: PAGINATION_ARTIFACT_CONFIDENCE,
+              xobjectName: name,
+              detail: `该 XObject 由 /Artifact<</Subtype${decoration}>> … BDC … EMC 包裹绘制，`
+                + `且是纯文字的零碎小对象（页面通过 /${name} 调用，出现 ${count} 次）`,
+            },
+          })
+        } else {
+          noteNearMiss(pageNumber, `第 ${pageNumber} 页有一个 /Artifact<</Subtype${decoration}>> 包裹的 XObject /${name}，`
+            + `但${verdict.why}，未列为水印候选`)
+        }
         continue
       }
 
@@ -1215,18 +1389,50 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
       void alpha
     }
 
-    if (invoked.size === 0 && candidates.every(candidate => candidate.page !== pageNumber)) {
-      // Nothing structural stood out. Say so rather than implying clean.
-      const hasText = streams.some(stream => /Tj|TJ/.test(stream.text))
-      if (hasText) {
-        refused.push({
-          page: pageNumber,
-          detail: '未发现独立水印对象或斜向文字；若水印是栅格化进页面图片的，或作为普通正文绘制的，则无法可靠区分，本工具不做处理',
-        })
-      }
+    pageFacts.push({ page: pageNumber, hasText: streams.some(stream => /Tj|TJ/.test(stream.text)) })
+  }
+
+  // ── 3. repetition, the trait that needs the whole document ───────────────
+  const pagesByName = new Map<string, number[]>()
+  for (const item of deferred) {
+    pagesByName.set(item.key, [...(pagesByName.get(item.key) ?? []), item.page])
+  }
+  for (const item of deferred) {
+    const seen = pagesByName.get(item.key) ?? []
+    if (seen.length >= PAGINATION_MARK_MIN_PAGES) {
+      candidates.push({
+        ...item.candidate,
+        detail: `${item.candidate.detail}；同一对象在 ${seen.length} 页上重复出现，符合跨页重复的水印特征。`
+          + `置信度 ${PAGINATION_ARTIFACT_CONFIDENCE} 低于默认删除门槛 0.9，`
+          + `确认为水印后请用 minConfidence=${PAGINATION_ARTIFACT_CONFIDENCE} 显式移除`,
+      })
+    } else {
+      noteNearMiss(item.page, `第 ${item.page} 页的 /Artifact<</Subtype${item.subtype}>> 对象 /${item.key} 只出现 ${seen.length} 页，`
+        + `未达到跨页重复（≥ ${PAGINATION_MARK_MIN_PAGES} 页）的水印判据，未列为候选`)
     }
   }
 
+  // Nothing structural stood out on a page: say so rather than implying clean,
+  // and when an artifact-wrapped object WAS seen and rejected, say that instead —
+  // "found nothing" and "found something I will not act on" are different facts,
+  // and only the second one lets a user tell the tool it was wrong.
+  for (const facts of pageFacts) {
+    if (candidates.some(candidate => candidate.page === facts.page)) continue
+    const notes = nearMiss.get(facts.page)
+    if (notes !== undefined) {
+      for (const detail of notes) refused.push({ page: facts.page, detail })
+      continue
+    }
+    refused.push({
+      page: facts.page,
+      detail: facts.hasText
+        ? '未发现独立水印对象或斜向文字；若水印是栅格化进页面图片的，或作为普通正文绘制的，则无法可靠区分，本工具不做处理'
+        : '本页没有文字层，也没有独立水印对象；若水印已栅格化进页面图片，结构上无法与正文区分，本工具不做处理',
+    })
+  }
+
+  candidates.sort((a, b) => a.page - b.page)
+  refused.sort((a, b) => a.page - b.page)
   return { candidates, pages: pages.length, refused }
 }
 

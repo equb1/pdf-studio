@@ -1667,6 +1667,99 @@ console.log('\nAdobe-style watermarks — /PieceInfo and /Artifact wrapper\n')
 }
 
 /* -------------------------------------------------------------------------- */
+/* page-decoration artifacts — the /Subtype /Header shape                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A publishing site stamps its own line on every page of a shared worksheet.
+ *
+ * Measured on `沈阳苏家屯2025-2026学年九年级中考一模化学试卷+答案.pdf`, whose scan
+ * returned **zero** candidates: the mark is wrapped
+ * `/Artifact<</Subtype/Header>> … BDC … EMC`, its `/PieceInfo` says
+ * `/Private /Header`, and its body carries no constant alpha — so every signal
+ * that existed then (`/Watermark` subtype, Adobe `/Private /Watermark`,
+ * `/GS… gs` + drawing operator, rotation) was blind to it, and the report said
+ * "found nothing" with no explanation at all.
+ *
+ * D10a–D10d pin the contract: recognize it, label it as the heuristic it is,
+ * keep it out of a default removal, and refuse the three look-alikes out loud.
+ */
+{
+  const headerFixture = FIXTURES['pagination-artifact.pdf']
+  const rejectsFixture = FIXTURES['pagination-artifact-rejects.pdf']
+  const shape = await scanWatermarks(headerFixture)
+  const listed = shape.candidates.map(candidate => `${candidate.page}:${candidate.reason}:${candidate.confidence}`)
+
+  // First: the fixture really is the shape the old signals missed. Without this
+  // the assertions below could pass for an unrelated reason.
+  const shapeDoc = await loadDoc(headerFixture)
+  const shapeXObjects = shapeDoc.context.lookup(shapeDoc.getPages()[0].node.Resources().get(PDFName.of('XObject')))
+  const shapeMark = shapeDoc.context.lookup(shapeXObjects.get(PDFName.of('Fm0')))
+  const shapeBody = decodeStream(shapeMark) ?? ''
+  const shapePage = pageContentText(shapeDoc, 0)
+  const shapePieceInfo = shapeDoc.context.lookup(shapeMark.dict.get(PDFName.of('PieceInfo')))
+  const shapeCompound = shapePieceInfo instanceof PDFDict
+    ? shapeDoc.context.lookup(shapePieceInfo.get(PDFName.of('ADBE_CompoundType')))
+    : undefined
+  const shapePrivate = shapeCompound instanceof PDFDict
+    ? shapeDoc.context.lookup(shapeCompound.get(PDFName.of('Private')))?.toString()
+    : undefined
+  check('页眉类夹具确属旧信号漏掉的形状：/Subtype/Header、无 /gs、无旋转、无 Watermark 标识',
+    shapePage.includes('/Subtype/Header')
+    && !/\/[A-Za-z0-9]+ gs/.test(shapeBody)
+    && shapePrivate === '/Header'
+    && !shapePage.includes('/Watermark'),
+    `内容流：${JSON.stringify(shapePage.slice(0, 160))}；/PieceInfo /Private = ${shapePrivate}`)
+
+  spec('D10a', '页眉类 /Artifact 包裹的纯文本小对象、跨页重复时被判为候选（置信度 0.7、理由 pagination-artifact）',
+    shape.candidates.length === 3
+    && shape.candidates.every(candidate => candidate.reason === 'pagination-artifact')
+    && shape.candidates.every(candidate => candidate.confidence === 0.7)
+    && shape.candidates.every(candidate => candidate.xobjectName === 'Fm0')
+    && [1, 2, 3].every(page => shape.candidates.some(candidate => candidate.page === page)),
+    `${shape.candidates.length} 个候选：${JSON.stringify(listed)}`,
+    '3 页各 1 个候选，理由 pagination-artifact，置信度 0.7，指向 /Fm0')
+
+  // The medium confidence is the whole safety argument: it must not be enough
+  // for the default removal, and it must be enough once the user says so.
+  const defaultRun = await removeWatermarks(headerFixture, { dryRun: false })
+  spec('D10b', '默认门槛（0.9）不动页眉类候选，显式 minConfidence=0.7 才移除',
+    defaultRun.removed.length === 0
+    && defaultRun.skipped.length === 3
+    && defaultRun.bytes === headerFixture,
+    `默认：移除 ${defaultRun.removed.length} / 跳过 ${defaultRun.skipped.length}；字节未变 ${defaultRun.bytes === headerFixture}`,
+    '默认 0 移除 + 3 跳过且不改字节；minConfidence=0.7 时移除 3 个')
+
+  const opted = await removeWatermarks(headerFixture, { minConfidence: 0.7, dryRun: false })
+  check('页眉类水印：minConfidence=0.7 时真正移除 3 个，且修正后重扫为 0',
+    opted.removed.length === 3
+    && (await scanWatermarks(opted.bytes)).candidates.length === 0
+    && (await loadDoc(opted.bytes)).getPages().length === 3,
+    `移除 ${opted.removed.length} 个；重扫候选 ${(await scanWatermarks(opted.bytes)).candidates.length} 个`)
+
+  // The three look-alikes: each is an /Artifact<</Subtype/Header>> wrapper, and
+  // each must stay out of the candidate list — for its own stated reason.
+  const rejects = await scanWatermarks(rejectsFixture)
+  const reasons = rejects.refused.map(entry => `p${entry.page}:${entry.detail}`)
+  spec('D10c', '页眉类反例（超大 /BBox、含几何算子、只出现一页）不进候选，且各页在 refused 里说明理由',
+    rejects.candidates.length === 0
+    && rejects.refused.length === 3
+    && rejects.refused.some(entry => entry.detail.includes('超过 5% 上限'))
+    && rejects.refused.some(entry => entry.detail.includes('绘制几何图形的算子'))
+    && rejects.refused.some(entry => entry.detail.includes('只出现 1 页')),
+    `${rejects.candidates.length} 个候选 / refused：${JSON.stringify(reasons.map(r => r.slice(0, 60)))}`,
+    '0 个候选；refused 三条，分别指出面积超限、非纯文字、未跨页重复')
+
+  const cleanRescan = await scanWatermarks(opted.bytes)
+  spec('D10d', '移除页眉类水印后重扫不再报候选，也不再出现“看到了但没处理”的 artifact 说明',
+    cleanRescan.candidates.length === 0
+    && cleanRescan.refused.every(entry => !entry.detail.includes('/Artifact')),
+    `重扫候选 ${cleanRescan.candidates.length} 个 / refused ${cleanRescan.refused.length} 条，其中提到 /Artifact 的 `
+      + `${cleanRescan.refused.filter(entry => entry.detail.includes('/Artifact')).length} 条`,
+    '候选 0 个，且没有一条 refused 提到 /Artifact')
+}
+
+/* -------------------------------------------------------------------------- */
 /* summary                                                                    */
 /* -------------------------------------------------------------------------- */
 

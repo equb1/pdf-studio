@@ -434,6 +434,25 @@ TrueType 是二次曲线，PDF 只有三次曲线，转换用的是精确升阶
 那个宣称是假的，而一个"静默删掉一半"的工具比一个"说清为什么不能删"的工具更糟。
 无法处理的情况会出现在 `refused` 里，UI 会把它显示出来，避免"空列表"被误读成"这个文件很干净"。
 
+**识别用的五个信号**（`scanWatermarks`，按可靠度排序）：
+
+| # | 信号 | 置信度 | 说明 |
+|---|---|---|---|
+| 1 | `/Name` 带本插件的 `WATERMARK_MARKER` | 1 | 自己盖的章，确定性识别 |
+| 2 | `/PieceInfo /ADBE_CompoundType /Private /Watermark` | 1 | Acrobat 系水印的自述身份 |
+| 3 | `/Artifact<</Subtype/Watermark>> … BDC … EMC` 包裹 | 1 | 文件自述这是水印装饰，与算子数量无关 |
+| 4 | `/Artifact<</Subtype/Header\|/Footer\|/Pagination>>` 包裹，**且**内容只画文字、`/BBox` ≤ 页面 5%、同一对象跨 ≥ 2 页重复 | **0.7** | 出版站点给讲义盖的"微信搜索：XXX"就是这一种 |
+| 5 | 未命名 XObject（常透明度 + 至少一个绘制算子）/ 旋转的内联文字 | 0.45 / 0.35–0.6 | 兜底启发式，需人工判断 |
+
+第 4 条刻意压在默认门槛之下：**真正的页眉页脚带的是同一个 `/Subtype /Header` 标签**，
+结构上与这种水印无法区分，所以它只在扫描结果里被单独报出来、默认一个都不删；
+用户确认"那就是水印"之后，用 `pdf_watermark action=remove minConfidence=0.7` 显式删。
+`minConfidence` 会写进确认单——计划说 0.9、执行却按 0.7 删，等于用户确认了另一件事。
+
+`refused` 同样做到"看到了就说"：一个 artifact 对象被看见、但判定不是水印时（面积超标、
+含几何算子、没有跨页重复），每一页都会写明**具体哪一条判据不满足**，而不是笼统地说
+"没找到水印"再无下文。
+
 删除时会连**外层的 `/Artifact … BDC … EMC` 包裹一起删掉**：否则每页会留下一个空的
 artifact 块，日后扫描看起来像"有标记内容"，人只能靠猜。传进来的候选列表还必须
 能**在本次扫描里对上号**，不匹配（列出的是别的文件、或已过期）的候选一律忽略 ——
@@ -527,7 +546,7 @@ right/bottom 锚定切换为 auto                              ✓
 | `pdf_make_searchable` | 扫描件 → 可搜索 PDF（不可见文字层，外观不变） |
 | `pdf_edit_text` | 按 id 替换现有文字，位置与其余内容不变（**等长/原地替换**） |
 | `pdf_replace_line` | 整行重绘：抹掉目标绘制组的文字再原位重画，**并把同一视觉行右侧的片段整体右移让位**（改长/改短一个词的正确做法） |
-| `pdf_watermark` | `add` / `scan` / `remove` 三合一 |
+| `pdf_watermark` | `add` / `scan` / `remove` 三合一；`remove` 的 `minConfidence`（默认 0.9）决定门槛，页眉类候选（0.7）要显式放宽 |
 | `pdf_protect` | `check` / `encrypt` / `decrypt` |
 | `pdf_preview` | 把页面渲染成图片显示在会话里（`pages` 最多 4 页，`scale` 默认 1.4） |
 | `pdf_split` | 2-up → 单页：左右/上下对半切，也可 `keep` 只留一半（A3 试卷、720×405 讲义都行） |
@@ -879,6 +898,8 @@ planId 前 8 位、剩余时间、多行确认单、可纠正项与歧义列表�
   工具提示里的"只要文字不要 OCR 就加 `ocr=false`"对当前实现不成立。
 - 水印能力边界不变：栅格化进页面图片的、或当正文绘制的水印**无法可靠移除**（`scan` 会说明原因）。
   确认闸门只保证"不做没被同意的事"，不改变某个操作本身能不能做成。
+- `pdf_watermark action=remove` 的 **`minConfidence` 是确认单的一部分**：计划会写明"只移除置信度 ≥ X 的候选"，
+  改这个值就要重新确认。默认 0.9 —— 页眉/页脚类 artifact 候选（0.7）**不会被默认删掉**。
 - **`pdf_edit_text` 不做重排，但改长/改短一个词用 `pdf_replace_line` 解决**：`pdf_edit_text` 只把
   指定文字块的字形串换掉、**不会移动后面的文字**，所以它只适合**等长/原地替换**（`Unit` → `unit`）；
   把一个词改长（`turn` → `turning`）时它会给出「超过原 N pt，可能向右溢出」的提示但**不会阻止**，
@@ -1021,6 +1042,8 @@ npm run test:confirm-ui       # 浮层「待确认操作」卡片（浮层可选
 npm run test:plugin-wiring    # 工具注册 + 注入（默认关闭 / surface:true 两条路径）+ 策略透传
 npm run test:confirmation     # 门控判定 / planId 强校验 / 计划库 / /plans 路由
 npm run test:page-assembly    # 页级装配：拆分 2-up / 裁剪 / 重排 / 合并（含真实 canvas 回拼比对）
+npm run test:watermark        # 水印：加水印 / 识别 / 移除 / 拒绝路径（含 D10 页眉类 artifact 契约）
+npm run test:tools            # 工具层：参数校验、扫描文案、minConfidence 门槛的实际效果
 ```
 
 `test/confirmation.test.mjs` 覆盖「执行前确认」本身：三类判定与策略语义、planId 强校验

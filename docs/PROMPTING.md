@@ -54,8 +54,8 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 | 改掉 PDF 里原有的文字（等长/原地） | `pdf_edit_text` | `path`、`edits: [{page, targetId, to, fontSize?}]`、`output` |
 | 把一个词改长/改短（不与后文重叠） | `pdf_replace_line` | `path`、`page`、`targetId`（目标行里任意一个文字块 id）、`text`（这一整组的新文字）、`fontSize?`、`shiftSiblings?`（默认 true：同一视觉行右侧片段整体右移让位）、`output` |
 | 加水印 | `pdf_watermark` | `action: add`、`text` 或 `imagePath`、`render: text\|outline`、`placement: tile\|center\|corner`、`corner: top-left\|top-right\|bottom-left\|bottom-right`、`rotation`、`opacity`、`fontSize`、`color`、`margin`、`artifact`、`pages`、`output` |
-| 查水印 | `pdf_watermark` | `action: scan`（只读，不改文件） |
-| 删水印 | `pdf_watermark` | `action: remove`、`output` |
+| 查水印 | `pdf_watermark` | `action: scan`（只读，不改文件）。结果分两段：默认门槛内可删的，和"看到了但要你确认"的（例如页眉类 artifact，置信度 0.7） |
+| 删水印 | `pdf_watermark` | `action: remove`、`minConfidence`（默认 0.9；要删 0.7 的页眉类候选必须显式传 0.7）、`output` |
 | 加密 / 解密 | `pdf_protect` | `action: encrypt\|decrypt`、`password`、`allow`（`print` / `modify` / `extract` / `annotate` / `form` / `assembly` / `high-quality-print`）、`output` |
 | 查加密状态 | `pdf_protect` | `action: check`（只读） |
 | 把 2-up 拆成单页（A3 试卷 / 并排讲义） | `pdf_split` | `path`、`layout: auto\|left-right\|top-bottom`、`keep: both\|left\|right\|top\|bottom`、`gutter: middle\|auto`、`pages`、`targetSize: a4\|keep`、`output` |
@@ -64,7 +64,7 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 | 把多个文件按顺序合并 | `pdf_merge` | `paths`（≥2 个）、`ranges`（与 `paths` 一一对应，可省）、`output` |
 | 只想先看计划，不要执行 | 除 `pdf_preview` 外的 11 个工具 | `plan: true`（`watermark action=scan`、`protect action=check` 这两个只读分支不会返回计划） |
 
-默认值（不指定时实际生效的值）：水印 `render=text`、`placement=tile`、`opacity=0.15`、
+默认值（不指定时实际生效的值）：水印 `render=text`、`placement=tile`、`opacity=0.15`、`minConfidence=0.9`（仅 remove）、
 `fontSize=48`、`color=#d92626`、`margin=24`、`artifact=true`、`pages=全部`（`rotation` 平铺时 45°、其它 0°）；
 可搜索化 `mode=invisible`；加密只给 `print` 权限；页级装配里拆分 `layout=auto`、`keep=both`、
 `gutter=middle`、`targetSize=a4`；裁剪 `mode=fixed`、`margin=6`、`uniform=true`、`setCropBoxOnly=false`。
@@ -133,6 +133,11 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 2) 只删置信度 ≥ 0.9 的，action=remove，output=<输出路径>.pdf；
 3) 删完再 scan 一次输出文件，把剩下的候选和无法处理的原因报给我。
 如果有栅格化进页面图片、或当正文画的水印，直接告诉我删不掉，不要试。
+
+如果 scan 报了「另有 N 个候选置信度低于默认删除门槛 0.9」（典型是
+/Artifact<</Subtype/Header>> 包裹的页眉类对象，置信度 0.7）：把那几条原文念给我，
+问清是不是水印；我说是，才用 minConfidence=0.7 重跑 remove。
+不要自己替我放宽门槛，也不要把它们说成"已找到可删水印"。
 ```
 
 ### 模板 6 · 加密与解密

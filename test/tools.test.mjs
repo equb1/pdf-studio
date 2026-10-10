@@ -249,6 +249,54 @@ async function runTool(name, args) {
     JSON.stringify(fallback[0].text).slice(0, 60))
 }
 
+// ── the confidence threshold is part of the contract ────────────────────────
+//
+// `pdf_watermark action=remove` deletes only what the detector is sure about
+// (≥ 0.9). A page-decoration artifact that looks like a mark scores 0.7, so the
+// tool has to do three things and none of them is optional: report it in a
+// separate section, refuse to delete it by default, and delete it when the
+// caller raises the threshold explicitly — while the plan says which threshold
+// it will use.
+
+{
+  const { ensureFixtures, fixturePath } = await import('./fixtures/make-fixtures.mjs')
+  await ensureFixtures()
+  const header = fixturePath('pagination-artifact.pdf')
+  const headerHash = sha(new Uint8Array(await readFile(header)))
+
+  const scanned = await runTool('pdf_watermark', { path: header, action: 'scan' })
+  check('scan lists the page-decoration candidates separately from the confident ones',
+    scanned.includes('另有 3 个候选置信度低于默认删除门槛 0.9') && scanned.includes('70%'),
+    scanned.split('\n').slice(-2)[0] ?? scanned.split('\n')[0])
+  check('scan tells the user which minConfidence would remove them',
+    scanned.includes('minConfidence=0.7'), scanned.split('\n').slice(-1)[0])
+
+  const untouched = await runTool('pdf_watermark', {
+    path: header, action: 'remove', output: 'header-default.pdf',
+  })
+  check('remove without minConfidence leaves the medium-confidence candidates alone',
+    untouched.includes('没有置信度 ≥ 0.9 的可移除水印') && !existsSync('/tmp/pdf-studio-tools/header-default.pdf'),
+    untouched.split('\n')[0])
+
+  let badMessage = ''
+  try {
+    await byName.get('pdf_watermark').execute({ path: header, action: 'remove', minConfidence: 5 })
+  } catch (error) { badMessage = error.message }
+  check('an out-of-range minConfidence is reported readably', badMessage.includes('0..1'), badMessage)
+
+  const removed = await runTool('pdf_watermark', {
+    path: header, action: 'remove', minConfidence: 0.7, output: 'header-lowered.pdf',
+  })
+  check('an explicit minConfidence=0.7 removes all three', removed.includes('移除 3 个水印'),
+    removed.split('\n').slice(0, 2).join(' / '))
+  const after = await runTool('pdf_watermark', {
+    path: '/tmp/pdf-studio-tools/header-lowered.pdf', action: 'scan',
+  })
+  check('the produced file re-scans clean', after.includes('0 个可移除候选'), after.split('\n')[0])
+  check('the page-decoration source is byte-identical afterwards',
+    sha(new Uint8Array(await readFile(header))) === headerHash)
+}
+
 // ── the safety invariant ────────────────────────────────────────────────────
 
 check('the born-digital source is byte-identical after every tool ran',

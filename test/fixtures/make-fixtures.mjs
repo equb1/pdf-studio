@@ -28,6 +28,8 @@
  * | `resources-no-xobject.pdf` | the second shape alone, for a precise failure diagnosis |
  * | `adobe-watermark.pdf` | Acrobat shape: `/PieceInfo /ADBE_CompoundType /Private /Watermark` + `/Artifact` wrapper, plus a non-watermark control XObject |
  * | `artifact-indirect.pdf` | the same artifact wrapper with the properties dictionary given as an indirect reference (`/Artifact 12 0 R BDC`) |
+ * | `pagination-artifact.pdf` | the publishing-site shape: `/Artifact<</Subtype/Header>>` + `/PieceInfo /Private /Header`, a 144×13 sliver of red text repeated on 3 pages |
+ * | `pagination-artifact-rejects.pdf` | three `/Header` artifacts that must NOT be offered: oversized `/BBox`, a body that paints geometry, and one invoked on a single page |
  * | `bulky.pdf` | several pages of large, barely-compressible content, for duplication/bloat checks |
  * | `watermark-image.png` | a hand-encoded PNG, so the image watermark is testable without a rasteriser |
  *
@@ -314,6 +316,119 @@ function artifactIndirect() {
 }
 
 /**
+ * 12–13. The shape a publishing site stamps on a shared worksheet.
+ *
+ * Measured on a real file (`沈阳苏家屯2025-2026学年九年级中考一模化学试卷+答案.pdf`),
+ * whose detector returned zero candidates because of ONE word: the artifact is
+ * declared `/Artifact <</Subtype/Header …>>` and its `/PieceInfo` says
+ * `/Private /Header`, where the detector only ever looked for `/Watermark`.
+ * Nothing else about it resembles page furniture:
+ *
+ *   - the mark is a Form XObject invoked by ONE `Do` on every page;
+ *   - its `/BBox` is a 144 × 13.2 sliver (0.4% of A4);
+ *   - its body is two glyph runs of red text and no geometry at all;
+ *   - it carries no constant alpha, so even the "unnamed XObject" heuristic
+ *     (`/GS… gs` + a drawing operator) cannot see it.
+ *
+ * `rejects: true` builds the three near-misses that must NOT become candidates
+ * even though each is an `/Artifact<</Subtype/Header>>` wrapper:
+ *
+ *   | page | why it is refused |
+ *   |---|---|
+ *   | 1 | the `/BBox` covers 8% of the page — furniture, not a mark |
+ *   | 2 | the body paints a rectangle, so it is not pure text |
+ *   | 3 | mark-shaped, but invoked on this page alone (no cross-page repetition) |
+ */
+async function paginationArtifact({ rejects = false } = {}) {
+  const doc = await PDFDocument.create({ updateMetadata: false })
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+
+  const mark = (bbox, body, privateTag = 'Header') => formXObject(doc, {
+    Type: 'XObject',
+    Subtype: 'Form',
+    FormType: 1,
+    BBox: bbox,
+    Resources: { Font: { F0: font.ref } },
+    PieceInfo: { ADBE_CompoundType: { Private: privateTag } },
+  }, body.join('\n'))
+
+  const headerText = [
+    '0 g 0 G 0 i 0 J []0 d 0 j 1 w 10 M 0 Tc 0 Tw 100 Tz 0 TL 0 Tr 0 Ts',
+    'BT',
+    '/F0 12 Tf',
+    '1 0 0 rg',
+    '0 -10.452 Td',
+    '(WeChat: StudyLine) Tj',
+    'ET',
+    '',
+  ]
+
+  const small = mark([0, -12, 144, 1.2], headerText)
+  // Page 1 of the rejects: same content, but a slab of the page.
+  const big = mark([0, 0, 520, 80], headerText)
+  // Page 2 of the rejects: a rectangle in the body, so not a text-only object.
+  const geometric = mark([0, -12, 144, 1.2], [
+    '0.5 0.5 0.5 rg 0 -12 144 13.2 re f',
+    ...headerText,
+  ])
+  // Page 3 of the rejects: mark-shaped and small, invoked exactly once.
+  const lonely = mark([0, -12, 144, 1.2], headerText)
+
+  const artifactLine = '/Artifact<</Contents(header)/Subtype/Header/Type/Pagination>> BDC'
+  const invoke = name => [
+    artifactLine,
+    'q',
+    '1 0 0 1 72.0082092 817.8856812 cm',
+    `/${name} Do`,
+    'Q',
+    'EMC',
+    '',
+  ].join('\n')
+
+  const build = (xobjects, bodyText) => {
+    const page = doc.addPage([A4.width, A4.height])
+    page.node.set(PDFName.of('Resources'), doc.context.obj({
+      Font: { F0: font.ref },
+      XObject: xobjects,
+    }))
+    setContents(doc, page, [
+      `BT /F0 12 Tf 60 700 Td (${bodyText}) Tj ET`,
+      invoke('Fm0'),
+    ].join('\n'))
+    return page
+  }
+
+  if (!rejects) {
+    // Three pages, the same /Fm0 on each: cross-page repetition is the point.
+    for (let i = 1; i <= 3; i += 1) build({ Fm0: small }, `Worksheet page ${i}`)
+    return doc.save()
+  }
+
+  build({ Fm0: big }, 'Reject page 1: oversized BBox')
+  build({ Fm0: geometric }, 'Reject page 2: paints geometry')
+  const last = doc.addPage([A4.width, A4.height])
+  last.node.set(PDFName.of('Resources'), doc.context.obj({
+    Font: { F0: font.ref },
+    XObject: { Fm9: lonely },
+  }))
+  setContents(doc, last, [
+    'BT /F0 12 Tf 60 700 Td (Reject page 3: invoked once) Tj ET',
+    invoke('Fm9'),
+  ].join('\n'))
+  return doc.save()
+}
+
+/** 12. The publishing-site shape, repeated across pages. */
+function paginationHeader() {
+  return paginationArtifact({ rejects: false })
+}
+
+/** 13. Three `/Header` artifacts that must stay out of the candidate list. */
+function paginationRejects() {
+  return paginationArtifact({ rejects: true })
+}
+
+/**
  * 9. Several pages of large, barely-compressible content. The payload here is
  * ~55KB per page, so any inline-and-orphan behaviour shows up as ~55KB of growth
  * per page. Each page gets its own complete `/Resources` (including `/XObject`),
@@ -353,6 +468,8 @@ export const FIXTURES = {
   'resources-no-xobject.pdf': resourcesNoXObject,
   'adobe-watermark.pdf': adobePieceInfo,
   'artifact-indirect.pdf': artifactIndirect,
+  'pagination-artifact.pdf': paginationHeader,
+  'pagination-artifact-rejects.pdf': paginationRejects,
   'bulky.pdf': bulky,
   'watermark-image.png': async () => watermarkImage(),
 }

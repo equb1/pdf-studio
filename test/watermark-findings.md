@@ -29,9 +29,25 @@ downloads, deterministic).
 
 ## Status: all defect specifications satisfied
 
-`WATERMARK_STRICT=1 npm run test:watermark` → **exit 0**, `passed 49  regressions failed 0
-defects open 0  skipped 0` (24 regression checks + 25 defect specifications). No `FAIL`, no `DEFECT`,
-no `SKIP`.
+`WATERMARK_STRICT=1 npm run test:watermark` → **exit 0**, `passed 60  regressions failed 0
+defects open 0  skipped 11`. No `FAIL`, no `DEFECT`. The 11 skips are the pixel assertions, which
+need the `@napi-rs/canvas` native binding this machine cannot load — see the environment matrix.
+
+### D10: the page-decoration (`/Subtype /Header`) shape
+
+Found on a real file (`沈阳苏家屯2025-2026学年九年级中考一模化学试卷+答案.pdf`): the scan returned
+**zero** candidates with no explanation, because the mark is wrapped
+`/Artifact<</Subtype/Header>> … BDC … EMC`, its `/PieceInfo` says `/Private /Header`, and its body
+carries no constant alpha. Every signal that existed then keyed on the literal string `/Watermark`,
+so one word in the file decided the outcome. Measured on the fixture: flipping only that word to
+`/Subtype /Watermark` makes the old detector report all 3 pages at confidence 1 — which is why the
+fix adds a *page-decoration* signal instead of loosening the `/Watermark` one.
+
+The new signal requires all three of: a text-only body, a `/BBox` ≤ 5% of the visible page, and the
+same resource invoked on ≥ 2 pages — and it is capped at **0.7**, below the default 0.9 removal
+threshold, because a real running header carries the identical `/Subtype /Header` tag. The tool
+therefore reports it in a separate section and requires `minConfidence=0.7` (which is written into
+the confirmation plan) before anything is deleted.
 
 | id | specification | status |
 |---|---|---|
@@ -60,6 +76,10 @@ no `SKIP`.
 | D8c | file growth is the same order as the watermark payload | ok |
 | D9a | one invocation per page, wrapped in `/Artifact … BDC … EMC` | ok |
 | D9b | `result.render` / `result.artifact` match the mode actually used | ok |
+| D10a | a `/Artifact<</Subtype/Header>>`-wrapped text-only sliver repeated across pages is offered (0.7, `pagination-artifact`) | ok |
+| D10b | the default threshold (0.9) leaves it alone; `minConfidence=0.7` removes it | ok |
+| D10c | the look-alikes (oversized `/BBox`, body paints geometry, single-page invocation) stay out of the list, each with its own stated reason in `refused` | ok |
+| D10d | after removal a re-scan reports neither a candidate nor a "saw it, did not act" artifact note | ok |
 
 Measured on the fix: `bulky.pdf` 331,656B → 345,182B (**+13,526B**, page content totals 440,808B);
 orphaned streams 0 → 0; inline content streams 0 → 0.
