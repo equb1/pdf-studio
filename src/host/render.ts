@@ -53,3 +53,30 @@ export async function renderPagePng(
     await doc.dispose()
   }
 }
+
+/**
+ * 把某一页渲染成 JPEG。
+ *
+ * 先走 `renderPagePng`（pdf.js + 真实 canvas），再用 canvas 以指定质量转码成 JPEG。
+ * 放在这里而不是工具层：工具层是 ESM，裸 `require` 会触发
+ * "Cannot determine intended module format"；渲染相关的 native 加载统一在本模块做。
+ */
+export async function renderPageJpeg(
+  sourcePath: string,
+  pageNumber: number,
+  scale = 2,
+  quality = 0.9,
+): Promise<Uint8Array> {
+  const png = await renderPagePng(sourcePath, pageNumber, scale)
+  const { createCanvas, loadImage } = require('@napi-rs/canvas') as {
+    createCanvas(width: number, height: number): {
+      getContext(type: '2d'): { drawImage(image: unknown, x: number, y: number): void }
+      toBuffer(mime: string, quality?: number): Buffer
+    }
+    loadImage(input: Buffer): Promise<{ width: number; height: number }>
+  }
+  const image = await loadImage(Buffer.from(png))
+  const canvas = createCanvas(image.width, image.height)
+  canvas.getContext('2d').drawImage(image, 0, 0)
+  return new Uint8Array(canvas.toBuffer('image/jpeg', quality))
+}

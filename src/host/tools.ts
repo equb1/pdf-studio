@@ -31,10 +31,47 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
-import { PDFDocument } from 'pdf-lib'
+import {
+  PDFCheckBox,
+  PDFDocument,
+  PDFDropdown,
+  PDFOptionList,
+  PDFRadioGroup,
+  PDFTextField,
+} from 'pdf-lib'
 import { analyzeDocument, applyTextEdits, exportSearchable, inspectDocument, protectPdf, readEditableDocument, reportWatermarks, stampWatermark, stripWatermarks, lineSummary } from './engine.ts'
 import { redrawLineInPdfBytes } from '../core/line-redraw.ts'
+import { openPdf, openPdfBytes } from '../core/pdf.ts'
+import { extractTextLayer } from '../core/text-layer.ts'
+import {
+  applyTemplate,
+  drawTextOnPage,
+  formatBates,
+  pageSelection,
+  resolveDrawFont,
+  unknownPlaceholders,
+  type TextAnchor,
+} from '../core/page-text.ts'
+import {
+  ACTION_SUBTYPES,
+  APPEARANCE_ACTIONS,
+  DEFAULT_COLORS,
+  DEFAULT_OPACITY,
+  MARKUP_ACTIONS,
+  NOTE_ICONS,
+  addAnnotation,
+  countAnnotations,
+  locateInLine,
+  type AnnotationAction,
+} from '../core/annotate.ts'
 import { inspectLanguageData, describeMissingLanguage } from '../core/ocr.ts'
+import { loadFontkitAdapter, resolveFontForText } from '../core/fonts.ts'
+import { bookletSheets, countAnnotsPerPage, nupPages, parseTargetSize, resizePages } from '../core/layout.ts'
+import { applyMetadata, clearMetadata, clearOutline, listOutline, METADATA_FIELDS, readMetadata, setOutline, type MetadataField } from '../core/docinfo.ts'
+import { redactPages, type RedactBox } from '../core/redact.ts'
+import { describeSaving, optimizePdf, type OptimizeProfile } from '../core/optimize.ts'
+import { comparePdfs, renderCompareReport } from '../core/compare.ts'
+import { runQpdf } from '../core/qpdf.ts'
 import {
   formatPages,
   formatRange,
@@ -553,6 +590,30 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         }
         if (runs.length > 40) lines.push(`  …其余 ${runs.length - 40} 个省略`)
         for (const note of model.notes) lines.push(`注意：${note}`)
+      }
+
+      // 注释层报告：之前批过什么、能不能批注，一眼看到。只读，不额外花 OCR。
+      try {
+        const pdfDoc = await PDFDocument.load(new Uint8Array(await readFile(source)), {
+          updateMetadata: false,
+          ignoreEncryption: true,
+        })
+        let annotTotal = 0
+        const bySubtype: Record<string, number> = {}
+        for (const page of pdfDoc.getPages()) {
+          const counted = countAnnotations(page as never, pdfDoc.context as never)
+          annotTotal += counted.total
+          for (const [key, value] of Object.entries(counted.bySubtype)) {
+            bySubtype[key] = (bySubtype[key] ?? 0) + value
+          }
+        }
+        if (annotTotal > 0) {
+          lines.push(
+            `注释：${annotTotal} 个（${Object.entries(bySubtype).map(([key, value]) => `${key} ×${value}`).join('、')}）`,
+          )
+        }
+      } catch {
+        // 注释统计失败不该影响检查本身。
       }
 
       return { text: lines.join('\n') }
@@ -1424,6 +1485,1228 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
     },
   }
 
+  /** 动作 → 中文说法（结果文本用）。 */
+  const ANNOTATION_LABELS: Record<AnnotationAction, string> = {
+    highlight: '高亮',
+    underline: '加下划线',
+    strikeout: '加删除线',
+    box: '加方框',
+    ellipse: '加椭圆',
+    freetext: '写入自由文本',
+    note: '加便签',
+    stamp: '盖章',
+  }
+
+  // ── annotate ─────────────────────────────────────────────────────────────
+  const annotate: ToolDefinition = {
+    name: 'pdf_annotate',
+    description:
+      '注释标注：高亮 / 下划线 / 删除线 / 方框 / 椭圆 / 自由文本 / 便签 / 图章，写进 PDF 的注释层'
+      + '（可在阅读器里选中、编辑、导出；带 Print 标志，打印时会出现）。'
+      + '文本标记类（highlight/underline/strikeout）用 find="要标注的文字" 在该页文字层里定位，不必自己算坐标；'
+      + '其余动作用 rect={x,y,width,height}（pt，原点左下）。生成新文件，绝不覆盖源文件。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      action: {
+        type: 'string',
+        required: true,
+        description: 'highlight | underline | strikeout | box | ellipse | freetext | note | stamp。',
+      },
+      page: { type: 'integer', required: true, description: '页码（1 开始）。' },
+      find: { type: 'string', description: '要标注的文字（文本标记类必填），在该页文字层里定位。' },
+      occurrence: { type: 'integer', description: '同一页里第几次出现，默认 1。' },
+      rect: {
+        type: 'object',
+        description: '位置与大小 {x,y,width,height}（pt，原点左下）：框/椭圆/自由文本/便签/图章必填。',
+      },
+      contents: { type: 'string', description: '自由文本 / 便签 / 图章的正文。' },
+      color: { type: 'string', description: '颜色 #rrggbb；省略用动作默认色（高亮黄、下划线红、图章蓝…）。' },
+      opacity: { type: 'number', description: '不透明度 0..1；省略用动作默认（高亮 0.4、其余 1）。' },
+      borderWidth: { type: 'number', description: '边框宽度（pt），默认 1.5。' },
+      fontSize: { type: 'number', description: '自由文本默认 12、图章默认 24。' },
+      icon: { type: 'string', description: `便签图标：${NOTE_ICONS.join(' | ')}，默认 Comment。` },
+      author: { type: 'string', description: '注释作者，默认 dsh-pdf-studio。' },
+      output: { type: 'string', description: '输出路径。省略则生成 <名字>-annotated.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `添加标注 ${basename(String(args.path ?? ''))}`,
+      kind: 'write',
+    }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const actionRaw = String(args.action ?? '').trim()
+      if (!(actionRaw in ACTION_SUBTYPES)) {
+        throw new Error(`未知 action：${actionRaw === '' ? '（空）' : actionRaw}；支持 ${Object.keys(ACTION_SUBTYPES).join(' / ')}`)
+      }
+      const action = actionRaw as AnnotationAction
+      const pageNumber = Number(args.page)
+      if (!Number.isFinite(pageNumber) || pageNumber < 1) throw new Error('page 无效：应为从 1 开始的页码')
+      const output = resolveOutput(source, args, '-annotated', options.workspaceRoot)
+      const isMarkup = MARKUP_ACTIONS.includes(action)
+      const needsAppearance = APPEARANCE_ACTIONS.includes(action)
+      const find = optionalString(args, 'find')
+      const contents = optionalString(args, 'contents')
+      const occurrence = typeof args.occurrence === 'number' && args.occurrence >= 1 ? Math.floor(args.occurrence) : 1
+      const rectArg = args.rect as { x?: unknown; y?: unknown; width?: unknown; height?: unknown } | undefined
+      const rect = rectArg !== undefined
+        && [rectArg.x, rectArg.y, rectArg.width, rectArg.height].every(
+          value => typeof value === 'number' && Number.isFinite(value),
+        )
+        ? { x: Number(rectArg.x), y: Number(rectArg.y), width: Number(rectArg.width), height: Number(rectArg.height) }
+        : undefined
+      const color = optionalString(args, 'color')
+      const author = optionalString(args, 'author')
+      const icon = optionalString(args, 'icon')
+      if (icon !== undefined && !NOTE_ICONS.includes(icon)) {
+        throw new Error(`icon "${icon}" 不是标准便签图标；可用：${NOTE_ICONS.join(' / ')}`)
+      }
+      const opacity = typeof args.opacity === 'number' && args.opacity >= 0 && args.opacity <= 1 ? args.opacity : undefined
+      const borderWidth = typeof args.borderWidth === 'number' && args.borderWidth > 0 ? args.borderWidth : undefined
+      const fontSize = typeof args.fontSize === 'number' && args.fontSize > 0 ? args.fontSize : undefined
+
+      const missing: string[] = []
+      if (isMarkup && find === undefined) missing.push('要标注的文字（find）')
+      if (!isMarkup && rect === undefined) missing.push('注释位置（rect: {x,y,width,height}）')
+      if (needsAppearance && contents === undefined) missing.push('注释内容（contents）')
+
+      // 文本标记：先在文字层里定位。算出来的几何会写进计划参数，
+      // 于是"确认的是这个位置、执行的是这个位置"由 planId 绑死。
+      let quads: Array<{ x: number; y: number; width: number; height: number }> | undefined
+      let locatedLine: string | undefined
+      if (isMarkup && find !== undefined && missing.length === 0) {
+        const doc = await openPdf(source)
+        let lines: Array<{ text: string; rect: { x: number; y: number; width: number; height: number } }> = []
+        try {
+          if (pageNumber > doc.numPages) throw new Error(`页码 ${pageNumber} 超出范围（共 ${doc.numPages} 页）`)
+          lines = (await extractTextLayer(doc, pageNumber)).map(line => ({ text: line.text, rect: line.rect }))
+        } finally {
+          await doc.destroy?.()
+        }
+        const hit = lines.find(line => line.text.includes(find))
+        if (hit === undefined) {
+          const head = lines.slice(0, 3).map(line => line.text).join(' / ') || '（这一页没有文字层，可能是扫描图；先 pdf_make_searchable）'
+          throw new Error(`第 ${pageNumber} 页没有找到文字「${find}」。这一页前几行是：${head}`)
+        }
+        const window = locateInLine(hit, find, occurrence)
+        if (window === undefined) {
+          throw new Error(`第 ${pageNumber} 页找到该行，但第 ${occurrence} 次出现的「${find}」定位失败`)
+        }
+        quads = [window]
+        locatedLine = hit.text.slice(0, 60)
+      }
+
+      const gate = authorize({
+        tool: 'pdf_annotate',
+        action,
+        parameters: {
+          page: pageNumber,
+          action,
+          find,
+          ...(find === undefined ? {} : { occurrence }),
+          rect,
+          quads,
+          contents,
+          color,
+          opacity,
+          borderWidth,
+          fontSize,
+          icon,
+          author,
+        },
+        inputs: [source],
+        output,
+        missing,
+        defaults: {
+          color: DEFAULT_COLORS[action],
+          opacity: DEFAULT_OPACITY[action],
+          ...(needsAppearance ? { fontSize: action === 'stamp' ? 24 : 12 } : {}),
+          ...(action === 'note' ? { icon: 'Comment' } : {}),
+        },
+        hints: [
+          '文本标记给 find="原句" 就能定位；框/椭圆/图章给 rect={x,y,width,height}（pt，原点左下）',
+          '自由文本 / 便签 / 图章必须给 contents',
+        ],
+        effects: [
+          '不修改源文件，结果写入新的 PDF',
+          '注释带 Print 标志（/F 4），打印与打印预览里会出现',
+          '注释写在注释层，可在阅读器里选中 / 编辑 / 删除',
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      const pdfDoc = await PDFDocument.load(new Uint8Array(await readFile(source)), { updateMetadata: false })
+      const page = pdfDoc.getPages()[pageNumber - 1]
+      if (page === undefined) throw new Error(`页码 ${pageNumber} 超出范围（共 ${pdfDoc.getPageCount()} 页）`)
+      const size = page.getSize()
+      const target = rect ?? { x: 0, y: 0, width: 0, height: 0 }
+      if (rect !== undefined) {
+        // 越界收拢而不是拒绝：用户给的矩形常常只差几个点。
+        target.x = Math.max(0, Math.min(rect.x, size.width - 1))
+        target.y = Math.max(0, Math.min(rect.y, size.height - 1))
+        target.width = Math.max(1, Math.min(rect.width, size.width - target.x))
+        target.height = Math.max(1, Math.min(rect.height, size.height - target.y))
+      }
+      const result = await addAnnotation(
+        pdfDoc as never,
+        page as never,
+        pdfDoc.context as never,
+        {
+          action,
+          rect: isMarkup && quads !== undefined ? quads[0] : target,
+          ...(quads === undefined ? {} : { quads }),
+          ...(color === undefined ? {} : { color }),
+          ...(opacity === undefined ? {} : { opacity }),
+          ...(borderWidth === undefined ? {} : { borderWidth }),
+          ...(contents === undefined ? {} : { contents }),
+          ...(author === undefined ? {} : { author }),
+          ...(fontSize === undefined ? {} : { fontSize }),
+          ...(icon === undefined ? {} : { icon }),
+        },
+      )
+      await writeFile(output, await pdfDoc.save())
+      const label = ANNOTATION_LABELS[action]
+      const details = isMarkup
+        ? `「${find}」已${label}（定位行：${locatedLine ?? ''}）`
+        : `${label}已加在第 ${pageNumber} 页 (${target.x.toFixed(0)}, ${target.y.toFixed(0)}) ${target.width.toFixed(0)}×${target.height.toFixed(0)}pt`
+      const overflow = !isMarkup && contents !== undefined && action === 'freetext'
+        && target.width < contents.length * (fontSize ?? 12) * 0.6
+      return {
+        text: [
+          `已生成：${output}`,
+          `第 ${pageNumber} 页：${details}${result.appearance ? '，并生成了外观流（/AP）' : ''}。`,
+          ...(overflow ? ['注意：文字可能超出这个框的宽度（本工具不自动换行，需要换行请用 \n）。'] : []),
+          '注意：注释由阅读器渲染；我们的预览走 pdf.js 的 canvas，可能不显示注释层——请在系统预览 / Acrobat 里确认观感。',
+        ].join('\n'),
+      }
+    },
+  }
+
+  // ── page text（页码 / 页眉页脚 / Bates / 插入文字）──────────────────────
+  const PAGE_TEXT_ACTIONS = ['insert', 'page-number', 'header-footer', 'bates'] as const
+  const PAGE_TEXT_LABELS: Record<(typeof PAGE_TEXT_ACTIONS)[number], string> = {
+    insert: '插入文字',
+    'page-number': '写页码',
+    'header-footer': '写页眉页脚',
+    bates: '写 Bates 编号',
+  }
+  const pageText: ToolDefinition = {
+    name: 'pdf_text',
+    description:
+      '在页面上写字（写进内容流，属文档内容：打印会出现、可搜索）：'
+      + 'action=insert 在指定位置插入文字；page-number 写页码（{page}/{total}）；'
+      + 'header-footer 写页眉/页脚（{page}/{total}/{date}/{filename}）；bates 写递增编号。'
+      + '中文自动嵌入系统字体；生成新文件，绝不覆盖源文件。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      action: {
+        type: 'string',
+        required: true,
+        description: 'insert | page-number | header-footer | bates。',
+      },
+      pages: {
+        type: 'string',
+        description: '要写哪些页，默认全部；支持 1-3,7 与 odd/even。',
+      },
+      text: { type: 'string', description: 'insert：要插入的文字（可含 \\n 换行）。' },
+      header: { type: 'string', description: 'header-footer：页眉模板，例如 "内部资料 · {date}"。' },
+      footer: { type: 'string', description: 'header-footer：页脚模板，例如 "第 {page} / {total} 页"。' },
+      position: {
+        type: 'string',
+        description: '落点：top-left|top-center|top-right|bottom-left|bottom-center|bottom-right|center。'
+          + 'insert 默认 center；page-number 默认 bottom-center；bates 默认 bottom-right；header-footer 固定用顶部/底部居中。',
+      },
+      rect: {
+        type: 'object',
+        description: 'insert 的位置 {x,y}（pt，原点左下）或 {x,y,width,height}（宽高仅用于汇报）。给了它就不再按 position 算。',
+      },
+      fontSize: { type: 'number', description: '字号，默认 10。' },
+      color: { type: 'string', description: '颜色 #rrggbb，默认 #333333。' },
+      marginX: { type: 'number', description: '左右边距（pt），默认 40。' },
+      marginY: { type: 'number', description: '上下边距（pt），默认 28。' },
+      rotate: { type: 'number', description: '逆时针旋转角度，默认 0。' },
+      background: {
+        type: 'string',
+        description: '底衬颜色（#rrggbb）：给了就在文字下画一个色块，压住花哨背景。',
+      },
+      start: { type: 'integer', description: 'page-number / bates 的起始编号，默认 1。' },
+      prefix: { type: 'string', description: 'bates 前缀。' },
+      suffix: { type: 'string', description: 'bates 后缀。' },
+      digits: { type: 'integer', description: 'bates 补零位数，默认 6。' },
+      output: { type: 'string', description: '输出路径。省略则生成 <名字>-text.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `页面写字 ${basename(String(args.path ?? ''))}`,
+      kind: 'write',
+    }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const actionRaw = String(args.action ?? '').trim()
+      if (!PAGE_TEXT_ACTIONS.includes(actionRaw as never)) {
+        throw new Error(`未知 action：${actionRaw === '' ? '（空）' : actionRaw}；支持 ${PAGE_TEXT_ACTIONS.join(' / ')}`)
+      }
+      const action = actionRaw as (typeof PAGE_TEXT_ACTIONS)[number]
+      const output = resolveOutput(source, args, '-text', options.workspaceRoot)
+      const text = optionalString(args, 'text')
+      const header = optionalString(args, 'header')
+      const footer = optionalString(args, 'footer')
+      const position = optionalString(args, 'position') as TextAnchor | undefined
+      const anchors: readonly TextAnchor[] = [
+        'top-left', 'top-center', 'top-right', 'bottom-left', 'bottom-center', 'bottom-right', 'center',
+      ]
+      if (position !== undefined && !anchors.includes(position)) {
+        throw new Error(`position "${position}" 不是有效落点；可用：${anchors.join(' / ')}`)
+      }
+      const color = optionalString(args, 'color') ?? '#333333'
+      const background = optionalString(args, 'background')
+      const prefix = optionalString(args, 'prefix') ?? ''
+      const suffix = optionalString(args, 'suffix') ?? ''
+      const fontSize = typeof args.fontSize === 'number' && args.fontSize > 0 ? args.fontSize : 10
+      const marginX = typeof args.marginX === 'number' ? args.marginX : 40
+      const marginY = typeof args.marginY === 'number' ? args.marginY : 28
+      const rotate = typeof args.rotate === 'number' ? args.rotate : 0
+      const start = typeof args.start === 'number' && Number.isFinite(args.start) ? Math.floor(args.start) : 1
+      const digits = typeof args.digits === 'number' && args.digits > 0 ? Math.floor(args.digits) : 6
+      const rectArg = args.rect as { x?: unknown; y?: unknown } | undefined
+      const at = rectArg !== undefined && typeof rectArg.x === 'number' && typeof rectArg.y === 'number'
+        ? { x: Number(rectArg.x), y: Number(rectArg.y) }
+        : undefined
+      const pages = optionalString(args, 'pages')
+
+      const missing: string[] = []
+      if (action === 'insert' && text === undefined) missing.push('要插入的文字（text）')
+      if (action === 'header-footer' && header === undefined && footer === undefined) {
+        missing.push('页眉或页脚模板（header / footer）')
+      }
+
+      // 模板里出现我们不认识的占位符：如实提示，而不是静默留成 `{xxx}`。
+      const templates = [text, header, footer].filter((value): value is string => value !== undefined)
+      const known = ['page', 'total', 'date', 'filename', 'bates']
+      const unknown = templates.flatMap(template => unknownPlaceholders(template, known))
+
+      const gate = authorize({
+        tool: 'pdf_text',
+        action,
+        parameters: {
+          action, pages, text, header, footer, position, at, fontSize, color, marginX, marginY, rotate, background,
+          ...(action === 'page-number' || action === 'bates' ? { start } : {}),
+          ...(action === 'bates' ? { prefix, suffix, digits } : {}),
+        },
+        inputs: [source],
+        output,
+        missing,
+        defaults: { fontSize: 10, color: '#333333', marginX: 40, marginY: 28 },
+        hints: [
+          '页码用 {page}/{total}；页眉页脚还可用 {date}/{filename}；Bates 用 start/prefix/digits',
+          'insert 想固定在某个位置就传 rect={x,y}（pt，原点左下）',
+        ],
+        effects: [
+          '不修改源文件，结果写入新的 PDF',
+          '写在内容流里（不是注释层）：打印会出现、文本可搜索、可被后续改写',
+          ...(unknown.length > 0 ? [`模板里的占位符 ${unknown.map(name => `{${name}}`).join('、')} 不会被替换，会原样写进页面`] : []),
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      const doc = await PDFDocument.load(new Uint8Array(await readFile(source)), { updateMetadata: false })
+      const pageCount = doc.getPageCount()
+      const selected = pageSelection(pages, pageCount)
+      if (selected.length === 0) throw new Error('没有选中任何页')
+      const today = new Date().toISOString().slice(0, 10)
+      // 字体按"将要写的全部文字"挑：含中文就嵌 CJK 字号，纯 ASCII 走内置 Helvetica。
+      const sample = templates.join(' ') + ' 0123456789'
+      const font = await resolveDrawFont(doc as never, sample)
+      let lastText = ''
+      for (const [index, pageNumber] of selected.entries()) {
+        const page = doc.getPages()[pageNumber - 1]
+        if (page === undefined) continue
+        const vars = {
+          // `{page}` 是"**显示的**页码"：从 `start` 开始、按**选中顺序**递增（与 bates 一致）。
+          // 全文档编号时 start=1，于是它就等于真实页号；只选 3 且 start=10 时显示 10。
+          page: start + index,
+          total: pageCount,
+          date: today,
+          filename: basename(source),
+          bates: formatBates(start + index, { prefix, digits, suffix }),
+        }
+        const draws: Array<{ text: string; anchor: TextAnchor; at?: { x: number; y: number } }> = []
+        if (action === 'insert' && text !== undefined) {
+          draws.push({ text: applyTemplate(text, vars), anchor: position ?? 'center', ...(at === undefined ? {} : { at }) })
+        } else if (action === 'page-number') {
+          draws.push({ text: applyTemplate(text ?? '{page} / {total}', vars), anchor: position ?? 'bottom-center' })
+        } else if (action === 'bates') {
+          draws.push({ text: vars.bates, anchor: position ?? 'bottom-right' })
+        } else {
+          if (header !== undefined) {
+            draws.push({ text: applyTemplate(header, vars), anchor: position ?? 'top-center' })
+          }
+          if (footer !== undefined) {
+            draws.push({ text: applyTemplate(footer, vars), anchor: position ?? 'bottom-center' })
+          }
+        }
+        for (const spec of draws) {
+          drawTextOnPage(page as never, font, {
+            text: spec.text,
+            size: fontSize,
+            colorHex: color,
+            anchor: spec.anchor,
+            marginX,
+            marginY,
+            rotate,
+            ...(spec.at === undefined ? {} : { at: spec.at }),
+            ...(background === undefined ? {} : { background: { colorHex: background, padding: 4 } }),
+          })
+          lastText = spec.text
+        }
+      }
+      await writeFile(output, await doc.save())
+      return {
+        text: [
+          `已生成：${output}`,
+          `${PAGE_TEXT_LABELS[action]}：写了 ${selected.length} 页（第 ${selected[0]}${selected.length > 1 ? `…${selected[selected.length - 1]}` : ''} 页）`
+            + `，字号 ${fontSize}pt、颜色 ${color}${background === undefined ? '' : `、底衬 ${background}`}；最后一页写的是「${lastText}」。`,
+          ...(unknown.length > 0 ? [`注意：模板里的 ${unknown.map(name => `{${name}}`).join('、')} 不是已知占位符，已原样写入。`] : []),
+          '注意：文字写在内容流里（不是注释层），因此可搜索、打印会出现，也能被后续改写。',
+        ].join('\n'),
+      }
+    },
+  }
+
+  // ── images（导出页面为图片 / 图片合成 PDF）────────────────────────────────
+  const images: ToolDefinition = {
+    name: 'pdf_images',
+    description:
+      '图片与 PDF 互转：action=export 把页面导出成 PNG/JPG（页范围、缩放倍率、JPEG 质量）；'
+      + 'action=build 把多张图片按顺序合成一个 PDF（页尺寸 a4/letter/fit、方向、边距）。'
+      + '导出写到目录（每页一个文件），合成写成一个 PDF；都不覆盖任何源文件。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', description: 'export 用：源 PDF 路径。' },
+      images: {
+        type: 'array',
+        description: 'build 用：按顺序排列的图片路径（png/jpg），至少 1 张。',
+      },
+      action: { type: 'string', required: true, description: 'export | build。' },
+      pages: { type: 'string', description: 'export 用：要导出哪些页，默认全部；支持 1-3,7 与 odd/even。' },
+      format: { type: 'string', description: 'export 用：png（默认）或 jpeg。' },
+      scale: { type: 'number', description: 'export 用：渲染倍率，默认 2（1=72dpi，2=144dpi，3=216dpi）。' },
+      quality: { type: 'number', description: 'export 用：JPEG 质量 0..1，默认 0.9。' },
+      outputDir: { type: 'string', description: 'export 用：输出目录，默认源文件旁的 <名字>-pages/。' },
+      pageSize: { type: 'string', description: 'build 用：a4 | letter | fit（默认，页面等于图片尺寸）。' },
+      margin: { type: 'number', description: 'build 用：页边距（pt），默认 0。' },
+      output: { type: 'string', description: 'build 用：输出的 PDF 路径。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: String(args.action ?? '') === 'build' ? '图片合成 PDF' : `导出页面图片 ${basename(String(args.path ?? ''))}`,
+      kind: 'write',
+    }),
+    async execute(args) {
+      const action = String(args.action ?? '').trim()
+      if (action !== 'export' && action !== 'build') {
+        throw new Error(`未知 action：${action === '' ? '（空）' : action}；支持 export / build`)
+      }
+
+      // ── build：图片 → PDF ────────────────────────────────────────────────
+      if (action === 'build') {
+        const list = Array.isArray(args.images) ? (args.images as unknown[]).map(String) : []
+        if (list.length === 0) throw new Error('build 需要 images：按顺序给出至少一张图片路径')
+        const outputRaw = optionalString(args, 'output')
+        if (outputRaw === undefined) throw new Error('build 需要 output：输出 PDF 路径')
+        const output = resolve(outputRaw)
+        const margin = typeof args.margin === 'number' && args.margin >= 0 ? args.margin : 0
+        const pageSizeRaw = (optionalString(args, 'pageSize') ?? 'fit').toLowerCase()
+        if (!['a4', 'letter', 'fit'].includes(pageSizeRaw)) {
+          throw new Error(`pageSize "${pageSizeRaw}" 不支持；可用 a4 / letter / fit`)
+        }
+        const gate = authorize({
+          tool: 'pdf_images',
+          action: 'build',
+          parameters: { images: list, pageSize: pageSizeRaw, margin, output },
+          inputs: list,
+          output: { path: output, overwrites: existsSync(output) },
+          hints: ['顺序就是 images 数组的顺序；想重排就先调整数组'],
+          effects: ['不改动任何源图片', `生成 1 个 PDF（${list.length} 页）`],
+          ...confirmationArgs(options, args),
+        })
+        if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+        if (gate.kind === 'refused') throw new Error(gate.message)
+
+        const doc = await PDFDocument.create()
+        const sizes: Record<string, [number, number]> = { a4: [595.28, 841.89], letter: [612, 792] }
+        for (const [index, imagePath] of list.entries()) {
+          const full = resolve(imagePath)
+          if (!existsSync(full)) throw new Error(`第 ${index + 1} 张图片不存在：${imagePath}`)
+          const bytes = new Uint8Array(await readFile(full))
+          const isPng = bytes[0] === 0x89 && bytes[1] === 0x50
+          const embedded = isPng ? await doc.embedPng(bytes) : await doc.embedJpg(bytes)
+          if (pageSizeRaw === 'fit') {
+            const page = doc.addPage([embedded.width + margin * 2, embedded.height + margin * 2])
+            page.drawImage(embedded, { x: margin, y: margin, width: embedded.width, height: embedded.height })
+          } else {
+            const [pw, ph] = sizes[pageSizeRaw]
+            const page = doc.addPage([pw, ph])
+            const scale = Math.min((pw - margin * 2) / embedded.width, (ph - margin * 2) / embedded.height)
+            const width = embedded.width * scale
+            const height = embedded.height * scale
+            page.drawImage(embedded, { x: (pw - width) / 2, y: (ph - height) / 2, width, height })
+          }
+        }
+        await mkdir(dirname(output), { recursive: true })
+        await writeFile(output, await doc.save())
+        return {
+          text: [
+            `已生成：${output}`,
+            `合成 ${list.length} 页（${list.map(item => basename(item)).join(' → ')}）。`,
+            `页面：${pageSizeRaw === 'fit' ? '等于图片尺寸' : pageSizeRaw.toUpperCase()}，边距 ${margin}pt。`,
+            '注意：合成后的文字是图片内容，不可搜索——需要可搜索请对原 PDF 用 pdf_make_searchable。',
+          ].join('\n'),
+        }
+      }
+
+      // ── export：PDF → 图片 ──────────────────────────────────────────────
+      const source = resolveInput(args)
+      const format = (optionalString(args, 'format') ?? 'png').toLowerCase()
+      if (format !== 'png' && format !== 'jpeg') throw new Error(`format "${format}" 不支持；可用 png / jpeg`)
+      const scale = typeof args.scale === 'number' && args.scale > 0 && args.scale <= 6 ? args.scale : 2
+      const quality = typeof args.quality === 'number' && args.quality > 0 && args.quality <= 1 ? args.quality : 0.9
+      const info = await inspectDocument(source)
+      if (!info.readable) throw new Error(`${basename(source)} 已加密且没有提供密码，无法渲染导出`)
+      const selected = pageSelection(optionalString(args, 'pages'), info.pages)
+      const dir = optionalString(args, 'outputDir') === undefined
+        ? join(dirname(source), `${basename(source, extname(source))}-pages`)
+        : resolve(String(args.outputDir))
+      const gate = authorize({
+        tool: 'pdf_images',
+        action: 'export',
+        parameters: { pages: selected, format, scale, quality, outputDir: dir },
+        inputs: [source],
+        output: { path: join(dir, `${basename(source, extname(source))}-p${selected[0]}.${format === 'jpeg' ? 'jpg' : 'png'}`), overwrites: false },
+        hints: ['想拉高清晰度就把 scale 调大（3 ≈ 216dpi）', '只要某几页就传 pages="1-3"'],
+        effects: ['不修改源文件', `在目录里生成 ${selected.length} 个图片文件`, '页面会按 scale 倍率栅格化，文字变成图片'],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      const { renderPagePng, renderPageJpeg } = await import('./render.ts')
+      await mkdir(dir, { recursive: true })
+      const written: string[] = []
+      for (const pageNumber of selected) {
+        const ext = format === 'jpeg' ? 'jpg' : 'png'
+        const target = join(dir, `${basename(source, extname(source))}-p${pageNumber}.${ext}`)
+        const bytes = format === 'jpeg'
+          ? await renderPageJpeg(source, pageNumber, scale, quality)
+          : await renderPagePng(source, pageNumber, scale)
+        await writeFile(target, bytes)
+        written.push(target)
+      }
+      return {
+        text: [
+          `已导出 ${written.length} 张图片到：${dir}`,
+          `格式 ${format.toUpperCase()}、倍率 ${scale}${format === 'jpeg' ? `、质量 ${quality}` : ''}；`
+            + `例如 ${written.slice(0, 3).map(item => basename(item)).join('、')}${written.length > 3 ? '…' : ''}。`,
+          '注意：导出是栅格化（文字变图片、不可搜索）；不修改源文件。',
+        ].join('\n'),
+      }
+    },
+  }
+
+  // ── form（列字段 / 填写 / 扁平化）────────────────────────────────────────
+  const formTool: ToolDefinition = {
+    name: 'pdf_form',
+    description:
+      '表单：action=list 列出 AcroForm 字段（名字/类型/当前值/可选项）；'
+      + 'action=fill 按字段名填值（文本/勾选/单选/下拉/列表）；action=flatten 把表单"压平"成静态内容（不可再编辑，适合归档）。'
+      + '填完可以顺带 flatten。字段名不对会报错并列出该文件里真正可用的字段名。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      action: { type: 'string', required: true, description: 'list | fill | flatten。' },
+      values: {
+        type: 'object',
+        description: 'fill 用：{ 字段名: 值 }。文本填字符串；勾选框填 true/false；单选/下拉/列表填选项字符串。',
+      },
+      flatten: { type: 'boolean', description: 'fill 用：填完顺手压平（默认 false）。' },
+      output: { type: 'string', description: 'fill/flatten 用：输出路径，省略则生成 <名字>-form.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `表单 ${basename(String(args.path ?? ''))}`,
+      kind: String(args.action ?? '') === 'list' ? 'read' : 'write',
+    }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const action = String(args.action ?? '').trim()
+      if (!['list', 'fill', 'flatten'].includes(action)) {
+        throw new Error(`未知 action：${action === '' ? '（空）' : action}；支持 list / fill / flatten`)
+      }
+      const values = (args.values !== undefined && typeof args.values === 'object' && !Array.isArray(args.values))
+        ? args.values as Record<string, unknown>
+        : undefined
+      const wantFlatten = optionalBoolean(args, 'flatten') === true
+      const isWrite = action !== 'list'
+      const output = isWrite ? resolveOutput(source, args, '-form', options.workspaceRoot) : undefined
+
+      if (isWrite && action === 'fill' && values === undefined) {
+        throw new Error('fill 需要 values：给出 { 字段名: 值 }（先用 action=list 看有哪些字段）')
+      }
+
+      const gate = authorize({
+        tool: 'pdf_form',
+        action,
+        parameters: { action, values, flatten: wantFlatten },
+        inputs: [source],
+        ...(output === undefined ? {} : { output }),
+        effects: isWrite
+          ? [
+              '不修改源文件，结果写入新的 PDF',
+              action === 'fill' && !wantFlatten ? '表单域保留可编辑（想变成静态内容就加 flatten=true）' : '表单域会被压平成静态内容，之后不可再编辑',
+            ]
+          : ['只读，不修改任何文件'],
+        hints: ['先用 action=list 看字段名与可选项，再 fill', '归档场景建议 fill + flatten=true'],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      const doc = await PDFDocument.load(new Uint8Array(await readFile(source)), { updateMetadata: false })
+      const form = doc.getForm()
+      const fields = form.getFields()
+      const describe = (field: unknown): string => {
+        const named = field as { getName(): string }
+        if (field instanceof PDFTextField) {
+          const value = field.getText()
+          return `${named.getName()}｜文本｜${value === undefined || value === '' ? '（空）' : value}`
+        }
+        if (field instanceof PDFCheckBox) return `${named.getName()}｜勾选框｜${field.isChecked() ? '已勾选' : '未勾选'}`
+        if (field instanceof PDFRadioGroup) return `${named.getName()}｜单选｜${field.getSelected() ?? '（未选）'}｜可选 ${field.getOptions().join('/')}`
+        if (field instanceof PDFDropdown) return `${named.getName()}｜下拉｜${(field.getSelected() ?? []).join(',') || '（未选）'}｜可选 ${field.getOptions().join('/')}`
+        if (field instanceof PDFOptionList) return `${named.getName()}｜列表｜${(field.getSelected() ?? []).join(',') || '（未选）'}｜可选 ${field.getOptions().join('/')}`
+        return `${named.getName()}｜其他（${(field as object).constructor.name}）`
+      }
+
+      if (action === 'list') {
+        if (fields.length === 0) return { text: `${basename(source)}：没有表单域（AcroForm 为空）。` }
+        return {
+          text: [
+            `${basename(source)}：${fields.length} 个表单域`,
+            ...fields.map(field => `  ${describe(field)}`),
+            '字段名就是 fill 的 values 里的键；可选项来自上面列出的"可选"。',
+          ].join('\n'),
+        }
+      }
+
+      // fill：字段名必须先校验，错了就把可用字段名列出来（不静默跳过）。
+      const applied: string[] = []
+      if (action === 'fill' && values !== undefined) {
+        const known = new Map(fields.map(field => [(field as { getName(): string }).getName(), field]))
+        const unknown = Object.keys(values).filter(name => !known.has(name))
+        if (unknown.length > 0) {
+          throw new Error(
+            `这些字段不存在：${unknown.join('、')}。`
+            + `该文件可用的字段名：${[...known.keys()].join('、') || '（没有表单域）'}`,
+          )
+        }
+        for (const [name, raw] of Object.entries(values)) {
+          const field = known.get(name)
+          const value = String(raw)
+          if (field instanceof PDFTextField) field.setText(value)
+          else if (field instanceof PDFCheckBox) { if (raw === true || value === 'true' || value === '是') field.check(); else field.uncheck() }
+          else if (field instanceof PDFRadioGroup) field.select(value)
+          else if (field instanceof PDFDropdown) field.select(value)
+          else if (field instanceof PDFOptionList) field.select(value)
+          else throw new Error(`字段 "${name}" 的类型暂不支持填写（只支持文本/勾选框/单选/下拉/列表）`)
+          applied.push(`${name}=${raw === true ? '已勾选' : raw === false ? '未勾选' : value}`)
+        }
+      }
+      // 中文/非 Latin-1 的值：pdf-lib 默认用 Helvetica 画字段外观，会抛
+      // "WinAnsi cannot encode …"。这里在填完后用我们自己的 CJK 字体重刷一遍外观，
+      // 中文表单才填得进去（这是真实需求，不是可选项）。
+      const needsCjk = applied.some(item => /[^\x00-\xff]/.test(item))
+      if (action === 'fill' && needsCjk) {
+        const cjk = await resolveFontForText('中文')
+        if (cjk !== null) {
+          if (typeof (doc as { registerFontkit?: unknown }).registerFontkit === 'function') {
+            const fontkit = await loadFontkitAdapter()
+            if (fontkit !== null) (doc as unknown as { registerFontkit(a: unknown): void }).registerFontkit(fontkit)
+          }
+          const embedded = await doc.embedFont(cjk.bytes, { subset: true })
+          form.updateFieldAppearances(embedded as never)
+        }
+      }
+      if (wantFlatten || action === 'flatten') form.flatten()
+      await writeFile(output as string, await doc.save())
+      return {
+        text: [
+          `已生成：${output}`,
+          action === 'fill'
+            ? `填了 ${applied.length} 个字段：${applied.join('；')}${wantFlatten ? '，并已压平（不可再编辑）' : ''}。`
+            : '已把表单压平成静态内容（不可再编辑）。',
+          '注意：压平后的内容成为页面普通内容，无法再作为表单填写；需要保留可填写请用 action=fill（不加 flatten）。',
+        ].join('\n'),
+      }
+    },
+  }
+
+  // ── layout（统一尺寸/缩放 / N-up / 小册子）──────────────────────────────
+  const layout: ToolDefinition = {
+    name: 'pdf_layout',
+    description:
+      '版面重排：action=resize 把页面等比缩放到统一纸张（文字仍可搜索）；'
+      + 'action=nup 每张纸放 2/4/6/8/9 页（拼版省纸）；action=booklet 按骑马钉顺序生成对折小册子的版面。'
+      + '注意：缩放只作用于内容，注释/表单域不会跟着缩放；nup/booklet 用嵌入页面的方式实现，源页注释不会带过去。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      action: { type: 'string', required: true, description: 'resize | nup | booklet。' },
+      pageSize: {
+        type: 'string',
+        description: '目标纸张：a3/a4/a5/letter/legal，可加 -landscape/-portrait。'
+          + '默认 a4；booklet 默认 a4-landscape（一张 A4 横放两页）。',
+      },
+      margin: { type: 'number', description: '页边距（pt），默认 nup/booklet 12、resize 0。' },
+      gap: { type: 'number', description: 'nup/booklet：格子间距（pt），默认 8。' },
+      mode: { type: 'string', description: 'resize 用：fit（默认，保持长宽比）或 stretch（拉伸，会变形）。' },
+      perSheet: { type: 'integer', description: 'nup 用：每张纸几页，可用 2/4/6/8/9，默认 2。' },
+      pages: { type: 'string', description: 'resize 用：只处理这些页，默认全部（支持 1-3,7 与 odd/even）。' },
+      output: { type: 'string', description: '输出路径，省略则生成 <名字>-layout.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `版面重排 ${basename(String(args.path ?? ''))}`,
+      kind: 'write',
+    }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const action = String(args.action ?? '').trim()
+      if (!['resize', 'nup', 'booklet'].includes(action)) {
+        throw new Error(`未知 action：${action === '' ? '（空）' : action}；支持 resize / nup / booklet`)
+      }
+      const output = resolveOutput(source, args, '-layout', options.workspaceRoot)
+      const bytes = new Uint8Array(await readFile(source))
+      const probe = await PDFDocument.load(bytes, { updateMetadata: false })
+      const pageCount = probe.getPageCount()
+      const annots = countAnnotsPerPage(probe)
+      const defaultSize = action === 'booklet' ? 'a4-landscape' : 'a4'
+      const target = parseTargetSize(optionalString(args, 'pageSize') ?? defaultSize)
+      const margin = typeof args.margin === 'number' && args.margin >= 0
+        ? args.margin
+        : (action === 'resize' ? 0 : 12)
+      const gap = typeof args.gap === 'number' && args.gap >= 0 ? args.gap : 8
+      const mode = (optionalString(args, 'mode') ?? 'fit').toLowerCase()
+      if (action === 'resize' && mode !== 'fit' && mode !== 'stretch') {
+        throw new Error(`mode "${mode}" 不支持；可用 fit / stretch`)
+      }
+      const perSheet = action === 'nup'
+        ? (typeof args.perSheet === 'number' ? Math.floor(args.perSheet) : 2)
+        : 2
+      const selected = action === 'resize' ? pageSelection(optionalString(args, 'pages'), pageCount) : undefined
+
+      const gate = authorize({
+        tool: 'pdf_layout',
+        action,
+        parameters: {
+          action,
+          pageSize: optionalString(args, 'pageSize') ?? defaultSize,
+          target,
+          margin,
+          ...(action === 'nup' || action === 'booklet' ? { gap } : {}),
+          ...(action === 'resize' ? { mode, pages: selected } : {}),
+          ...(action === 'nup' ? { perSheet } : {}),
+        },
+        inputs: [source],
+        output,
+        hints: [
+          'resize 只改页面尺寸与缩放，不改内容；要"裁剪"用 pdf_crop（不缩放）',
+          'booklet 生成的是"打印后对折"的版面：一张纸两页，正反面交替',
+        ],
+        effects: [
+          '不修改源文件，结果写入新的 PDF',
+          action === 'resize'
+            ? `把每页内容等比缩放到 ${target[0].toFixed(0)}×${target[1].toFixed(0)}pt 并居中（文字仍可搜索）`
+            : `每张纸放 ${perSheet} 页 / 对折版面，共 ${action === 'nup' ? Math.ceil(pageCount / perSheet) : bookletSheets(pageCount).length} 张`,
+          ...(annots > 0
+            ? [action === 'resize'
+                ? `注意：本文件有 ${annots} 个注释/表单域，它们的位置**不会**跟着缩放（内容会缩，注释还在原坐标）`
+                : `注意：本文件有 ${annots} 个注释/表单域，拼版（嵌入页面）**不会**把它们带过去`]
+            : []),
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      if (action === 'resize') {
+        const result = await resizePages(bytes, { target, margin, mode: mode as 'fit' | 'stretch', pages: selected })
+        await writeFile(output, result.bytes)
+        return {
+          text: [
+            `已生成：${output}`,
+            `把 ${result.resized.length} 页缩放到 ${target[0].toFixed(0)}×${target[1].toFixed(0)}pt`
+              + `（${mode === 'fit' ? '保持长宽比、可能留白' : '拉伸填满'}，边距 ${margin}pt）。`,
+            ...(annots > 0 ? [`注意：${annots} 个注释/表单域的位置没有跟着缩放，请核对。`] : []),
+            '注意：内容是缩放而不是裁剪——文字/矢量保持原生，仍可搜索与改写。',
+          ].join('\n'),
+        }
+      }
+
+      const sheets = action === 'booklet'
+        ? bookletSheets(pageCount)
+        : undefined
+      const result = await nupPages(bytes, {
+        perSheet,
+        target,
+        margin,
+        gap,
+        ...(sheets === undefined ? {} : { sheets }),
+      })
+      await writeFile(output, result.bytes)
+      return {
+        text: [
+          `已生成：${output}`,
+          action === 'booklet'
+            ? `骑马钉小册子：源 ${pageCount} 页 → ${result.sheets} 个"面"（每面 2 页，打印后对折装订）。`
+            : `拼版：源 ${pageCount} 页 → ${result.sheets} 张纸（每张 ${perSheet} 页）。`,
+          `纸张 ${target[0].toFixed(0)}×${target[1].toFixed(0)}pt，边距 ${margin}pt、间距 ${gap}pt。`,
+          ...(annots > 0 ? [`注意：${annots} 个注释/表单域没有带过去（拼版走嵌入页面）。`] : []),
+          '注意：拼版后的页面是嵌入的页面对象，文字仍可提取，但不能再用文字工具逐块改写。',
+        ].join('\n'),
+      }
+    },
+  }
+
+  // ── metadata（文档属性 + 大纲/书签）──────────────────────────────────────
+  const metadata: ToolDefinition = {
+    name: 'pdf_metadata',
+    description:
+      '文档信息：action=get 读属性（标题/作者/主题/关键词/创建者/生成器）；action=set 写属性；action=clear 清除属性与编辑时间；'
+      + 'action=outline-list 列出书签（含目标页）；action=outline-set 用「标题 → 页码」生成书签；action=outline-clear 删除书签。'
+      + 'get / outline-list 是只读；其余会写盘（走确认门控）。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      action: {
+        type: 'string',
+        required: true,
+        description: 'get | set | clear | outline-list | outline-set | outline-clear。',
+      },
+      values: {
+        type: 'object',
+        description: 'set 用：{ title, author, subject, keywords, creator, producer } 里要写的字段（支持中文）。',
+      },
+      outline: {
+        type: 'array',
+        description: 'outline-set 用：[{ "title": "第一章", "page": 1 }, …]，按数组顺序排列（扁平一层）。',
+      },
+      output: { type: 'string', description: '写操作输出路径，省略则生成 <名字>-meta.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `文档信息 ${basename(String(args.path ?? ''))}`,
+      kind: String(args.action ?? '').startsWith('get') || String(args.action ?? '') === 'outline-list' ? 'read' : 'write',
+    }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const action = String(args.action ?? '').trim()
+      const readOnly = action === 'get' || action === 'outline-list'
+      if (!['get', 'set', 'clear', 'outline-list', 'outline-set', 'outline-clear'].includes(action)) {
+        throw new Error(`未知 action：${action === '' ? '（空）' : action}；支持 get / set / clear / outline-list / outline-set / outline-clear`)
+      }
+      const values = (args.values !== undefined && typeof args.values === 'object' && !Array.isArray(args.values))
+        ? args.values as Partial<Record<MetadataField, string>>
+        : undefined
+      const outlineRaw = Array.isArray(args.outline) ? args.outline as Array<{ title?: unknown; page?: unknown }> : undefined
+      if (action === 'set' && (values === undefined || Object.keys(values).length === 0)) {
+        throw new Error(`set 需要 values：{ ${METADATA_FIELDS.join(' / ')} } 里至少一个字段`)
+      }
+      if (action === 'outline-set' && (outlineRaw === undefined || outlineRaw.length === 0)) {
+        throw new Error('outline-set 需要 outline：[{ "title": "第一章", "page": 1 }, …]')
+      }
+      const output = readOnly ? undefined : resolveOutput(source, args, '-meta', options.workspaceRoot)
+
+      const gate = authorize({
+        tool: 'pdf_metadata',
+        action,
+        parameters: { action, values, outline: outlineRaw },
+        inputs: [source],
+        ...(output === undefined ? {} : { output }),
+        effects: readOnly
+          ? ['只读，不修改任何文件']
+          : action === 'clear'
+            ? ['不修改源文件，结果写入新的 PDF', '清除标题/作者等属性与创建/修改时间（用于对外发布前去掉隐私信息）']
+            : action.startsWith('outline')
+              ? ['不修改源文件，结果写入新的 PDF', '按数组顺序生成扁平书签（只支持一层）']
+              : ['不修改源文件，结果写入新的 PDF', '属性支持中文（写入时用 UTF-16 编码）'],
+        hints: ['对外发布前用 action=clear 去掉作者/标题等隐私信息', '书签只支持一层：要嵌套就分几次做（当前版本未实现嵌套）'],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      const doc = await PDFDocument.load(new Uint8Array(await readFile(source)), { updateMetadata: false })
+      if (action === 'get') {
+        const info = readMetadata(doc)
+        const lines = [`${basename(source)}：${info.pages} 页`]
+        for (const field of METADATA_FIELDS) {
+          lines.push(`  ${field}：${info.fields[field] ?? '（空）'}`)
+        }
+        const outline = listOutline(doc)
+        lines.push(outline.length === 0 ? '  书签：无' : `  书签：${outline.length} 条（用 action=outline-list 看明细）`)
+        return { text: lines.join('\n') }
+      }
+      if (action === 'outline-list') {
+        const outline = listOutline(doc)
+        if (outline.length === 0) return { text: `${basename(source)}：没有书签。` }
+        return {
+          text: [
+            `${basename(source)}：${outline.length} 条书签`,
+            ...outline.map(entry => `  ${'  '.repeat(entry.depth)}${entry.title} → 第 ${entry.page} 页`),
+          ].join('\n'),
+        }
+      }
+      if (action === 'set' && values !== undefined) {
+        const applied = applyMetadata(doc, values)
+        await writeFile(output as string, await doc.save())
+        return {
+          text: [
+            `已生成：${output}`,
+            `写入 ${applied.length} 个属性：${applied.map(field => `${field}=${values[field]}`).join('；')}。`,
+            '注意：中文用 UTF-16 编码写入，阅读器里显示正常；属性是文档级信息，不影响页面内容。',
+          ].join('\n'),
+        }
+      }
+      if (action === 'clear') {
+        clearMetadata(doc)
+        await writeFile(output as string, await doc.save())
+        return {
+          text: [
+            `已生成：${output}`,
+            `已清空 ${METADATA_FIELDS.length} 个属性并删除创建/修改时间。`,
+            '注意：这只清 Info 字典里的属性；页面内容、注释、表单里的信息不受影响。',
+          ].join('\n'),
+        }
+      }
+      if (action === 'outline-set' && outlineRaw !== undefined) {
+        const entries = outlineRaw.map(item => {
+          const title = String(item.title ?? '').trim()
+          const page = Number(item.page)
+          if (title === '' || !Number.isFinite(page) || page < 1) {
+            throw new Error('outline 每一项都要有 title（非空）与 page（1 起的页码）')
+          }
+          return { title, page: Math.floor(page) }
+        })
+        const count = setOutline(doc, entries)
+        await writeFile(output as string, await doc.save())
+        return {
+          text: [
+            `已生成：${output}`,
+            `生成了 ${count} 条书签：${entries.map(entry => `${entry.title}→第${entry.page}页`).join('、')}。`,
+            '注意：当前只支持**一层**书签（按 given 顺序排列）；嵌套大纲未实现。',
+          ].join('\n'),
+        }
+      }
+      clearOutline(doc)
+      await writeFile(output as string, await doc.save())
+      return {
+        text: [
+          `已生成：${output}`,
+          '已删除全部书签（目录里不再有 /Outlines）。',
+          '注意：删除的是书签，不影响页面内容。',
+        ].join('\n'),
+      }
+    },
+  }
+
+  // ── redact（矩形密文：真删除）────────────────────────────────────────────
+  const redact: ToolDefinition = {
+    name: 'pdf_redact',
+    description:
+      '矩形密文：把指定矩形里的**文字从内容流里真删掉**（不是画黑框遮住——遮住的还能复制/搜索出来），再补色块；'
+      + '落在框里的注释也一并删除。action=preview 先空跑报告会删掉什么，action=apply 真删并写盘。'
+      + '扫描件（整页图片）的内容无法修补，会在结果里如实说明。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      action: { type: 'string', description: 'preview（默认，空跑报告）| apply（真删并写盘）。' },
+      rects: {
+        type: 'array',
+        description: '要涂掉的矩形：[{ "page": 1, "x": 60, "y": 700, "width": 200, "height": 20 }, …]（pt，原点左下）。',
+      },
+      color: { type: 'string', description: '色块颜色 #rrggbb，默认 #000000。' },
+      output: { type: 'string', description: 'apply 的输出路径，省略则生成 <名字>-redacted.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `密文涂黑 ${basename(String(args.path ?? ''))}`,
+      kind: String(args.action ?? 'preview') === 'apply' ? 'write' : 'read',
+    }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const action = (optionalString(args, 'action') ?? 'preview').toLowerCase()
+      if (action !== 'preview' && action !== 'apply') {
+        throw new Error(`未知 action：${action}；支持 preview / apply`)
+      }
+      const rawRects = Array.isArray(args.rects) ? args.rects as Array<Record<string, unknown>> : []
+      if (rawRects.length === 0) {
+        throw new Error('需要 rects：[{ page, x, y, width, height }, …]（pt，原点左下；可以先用 pdf_extract_text 看坐标）')
+      }
+      const boxes: RedactBox[] = rawRects.map(item => {
+        const page = Number(item.page)
+        const x = Number(item.x)
+        const y = Number(item.y)
+        const width = Number(item.width)
+        const height = Number(item.height)
+        if (![page, x, y, width, height].every(Number.isFinite) || page < 1 || width <= 0 || height <= 0) {
+          throw new Error('rects 每一项都需要 page（≥1）与 x/y/width/height（数字，宽高为正）')
+        }
+        return { page: Math.floor(page), x, y, width, height }
+      })
+      const color = optionalString(args, 'color') ?? '#000000'
+      const isApply = action === 'apply'
+      const output = isApply ? resolveOutput(source, args, '-redacted', options.workspaceRoot) : undefined
+      const gate = authorize({
+        tool: 'pdf_redact',
+        action,
+        parameters: { action, rects: boxes, color },
+        inputs: [source],
+        ...(output === undefined ? {} : { output }),
+        effects: isApply
+          ? [
+              '不修改源文件，结果写入新的 PDF',
+              `把 ${boxes.length} 个矩形里的文字**从内容流删除**（复制/搜索/提取都拿不到），并补 ${color} 色块`,
+              '落在框里的注释一并删除',
+            ]
+          : ['空跑：只报告会删掉什么，不写任何文件'],
+        hints: ['先用 pdf_extract_text 拿到精确坐标，再 preview 确认，最后 apply', '坐标是 pt、原点左下（与 pdf_crop 的 box 同一套）'],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      // 先读出"每个框里原本有哪些文字"（来自文字层），交给核心按**内容**匹配删除。
+      const targetsByPage = new Map<number, string[]>()
+      const targetLineByPage = new Map<number, string[]>()
+      const targetRectsByPage = new Map<number, Array<{ x: number; y: number; width: number; height: number }>>()
+      {
+        const probe = await openPdf(source)
+        try {
+          // 先把页号校验掉：越界要在"取文字层"之前给出明确中文错误，
+          // 否则会被 pdf.js 的内部报错抢先，用户看不懂。
+          const pageCount = probe.numPages
+          for (const box of boxes) {
+            if (box.page > pageCount) throw new Error(`密文框指定了第 ${box.page} 页，但文档只有 ${pageCount} 页`)
+          }
+          for (const pageNumber of [...new Set(boxes.map(box => box.page))]) {
+            const lines = await extractTextLayer(probe, pageNumber)
+            const targets: string[] = []
+            const allLines: string[] = []
+            const targetRects: Array<{ x: number; y: number; width: number; height: number }> = []
+            for (const line of lines) {
+              const text = line.text.trim()
+              if (text.length === 0) continue
+              allLines.push(text)
+              const hit = boxes.some(box => box.page === pageNumber
+                && line.rect.x < box.x + box.width && box.x < line.rect.x + line.rect.width
+                && line.rect.y < box.y + box.height && box.y < line.rect.y + line.rect.height)
+              if (hit) {
+                targets.push(text)
+                targetRects.push({ x: line.rect.x, y: line.rect.y, width: line.rect.width, height: line.rect.height })
+              }
+            }
+            targetsByPage.set(pageNumber, targets)
+            targetRectsByPage.set(pageNumber, targetRects)
+            targetLineByPage.set(pageNumber, allLines)
+          }
+        } finally {
+          await probe.destroy?.()
+        }
+      }
+      const result = await redactPages(new Uint8Array(await readFile(source)), { boxes, color, targetsByPage, targetLinesByPage: targetRectsByPage })
+
+      // **强制复核**：密文最容易出的错是"报告删掉了、其实还能提取出来"。
+      // 所以写盘之前，对每个矩形做一次"框内文字是否还在"的对照：
+      // 框内原本能提取到的文字，若在结果里仍然能提取到，就**拒绝输出**并说清原因——
+      // 宁可明确失败，也不能给出一个看起来涂黑了、实际还能复制的假密文。
+      if (isApply) {
+        const insideBox = (line: { rect: { x: number; y: number; width: number; height: number } }, box: RedactBox) =>
+          line.rect.x < box.x + box.width && box.x < line.rect.x + line.rect.width
+          && line.rect.y < box.y + box.height && box.y < line.rect.y + line.rect.height
+        const beforeDoc = await openPdf(source)
+        // pdf.js 会 **transfer**（分离）传给它的缓冲区：复核必须用副本，
+        // 否则随后的 writeFile(result.bytes) 会抛 detached ArrayBuffer。
+        const afterDoc = await openPdfBytes(new Uint8Array(result.bytes))
+        const leftovers: string[] = []
+        try {
+          for (const pageNumber of [...new Set(boxes.map(box => box.page))]) {
+            const pageBoxes = boxes.filter(box => box.page === pageNumber)
+            const beforeLines = await extractTextLayer(beforeDoc, pageNumber)
+            const afterLines = await extractTextLayer(afterDoc, pageNumber)
+            for (const box of pageBoxes) {
+              const targets = beforeLines.filter(line => insideBox(line, box) && line.text.trim().length > 1)
+              for (const target of targets) {
+                const still = afterLines.some(line => insideBox(line, box) && line.text.includes(target.text.slice(0, 12)))
+                if (still) leftovers.push(`第 ${pageNumber} 页「${target.text.slice(0, 24)}」`)
+              }
+            }
+          }
+        } finally {
+          await beforeDoc.destroy?.()
+          await afterDoc.destroy?.()
+        }
+        // 第二道护栏：**误删**别的行同样不可接受（密文工具最容易"顺手删掉半页"）。
+        if (leftovers.length === 0) {
+          for (const pageNumber of [...new Set(boxes.map(box => box.page))]) {
+            const beforeLines = (await extractTextLayer(beforeDoc, pageNumber)).map(line => line.text.trim()).filter(text => text.length > 0)
+            const afterLines = (await extractTextLayer(afterDoc, pageNumber)).map(line => line.text.trim()).filter(text => text.length > 0)
+            const targets = targetsByPage.get(pageNumber) ?? []
+            const collateral = beforeLines.filter(text => !targets.includes(text) && !afterLines.includes(text))
+            if (collateral.length > 0) {
+              throw new Error(
+                `密文会影响框外内容，已拒绝输出：第 ${pageNumber} 页的「${collateral.slice(0, 3).join('、')}」等 ${collateral.length} 行本不该被删。`
+                + '请把矩形缩到刚好覆盖目标文字，或改用"导出图片→涂黑→重新合成"的方式。',
+              )
+            }
+          }
+        }
+        if (leftovers.length > 0) {
+          throw new Error(
+            `密文未真正生效，已拒绝输出：${leftovers.slice(0, 3).join('、')}${leftovers.length > 3 ? ` 等 ${leftovers.length} 处` : ''} 仍能被提取出来。`
+            + '原因通常是这一页的文字分散在多个内容流/嵌套结构里，本次改写没有覆盖到。'
+            + '这属于本工具的已知限制（不做"看起来涂黑了其实还能复制"的假密文）。'
+            + (result.report.imagePages.length > 0
+                ? `
+另外：第 ${result.report.imagePages.join('、')} 页含整页图片（扫描件/图片层）——`
+                  + '本工具按纪律（不做图片内容修补）不会去改图片像素，'
+                  + '即使删掉了叠在上面的 OCR 文字，画面也可能原样可见。'
+                : '')
+            + '\n可靠做法：pdf_images action=export 导出这几页 → 在图片上涂黑 → pdf_images action=build 重新合成。',
+          )
+        }
+      }
+      const summary = [
+        `删掉文字指令 ${result.report.removedShows} 条、注释 ${result.report.removedAnnots} 个、矢量路径 ${result.report.removedPaths} 条。`,
+        ...(result.report.imageOnlyPages.length > 0
+          ? [`注意：第 ${result.report.imageOnlyPages.join('、')} 页没有文字层（扫描件），**图片里的内容无法修补**，这里只做了视觉遮盖——要真安全请改用"导出这些页的图片→涂黑→重新合成"，或干脆不发布这几页。`]
+          : []),
+        '注意：文字已从内容流删除（可用 pdf_extract_text 复核）；但字体子集里的字形轮廓未清理，'
+          + '需要更强保证时应当只发布导出的图片版。',
+        ...(result.report.imagePages.length > 0
+          ? [`注意：第 ${result.report.imagePages.join('、')} 页含图片对象——文字层删了，但**图片像素里的内容不会被修补**（若这几页是扫描件，请核对是否仍能看出敏感信息），`
+            + '请核对这几页是否仍能看出敏感信息。']
+          : []),
+      ]
+      if (!isApply) {
+        return { text: [`（空跑，未写入文件）`, ...summary].join('\n') }
+      }
+      await writeFile(output as string, result.bytes)
+      return { text: [`已生成：${output}`, ...summary].join('\n') }
+    },
+  }
+
+  // ── optimize（体积/结构优化）────────────────────────────────────────────
+  const optimize: ToolDefinition = {
+    name: 'pdf_optimize',
+    description:
+      '体积与结构优化（走 qpdf 重写对象层）：profile=gc 垃圾回收（对象流 + 重压缩 + 清理未引用资源）、'
+      + 'linearize 线性化（Web 快速打开）、both 两者都做。会同时给出优化前后字节数——'
+      + '实测：图片占主导时可能只省 ~2%，也可能不变甚至略增（对象流本身有开销）；想大幅变小请走 pdf_images 导出 JPEG。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      profile: { type: 'string', description: 'gc（默认）| linearize | both。' },
+      other: { type: 'string', description: 'compare 用：另一份 PDF 的路径（与 path 比对）。' },
+      output: { type: 'string', description: '输出路径。省略则生成 <名字>-optimized.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `优化 ${basename(String(args.path ?? ''))}`,
+      kind: 'write',
+    }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const profileRaw = (optionalString(args, 'profile') ?? 'gc').toLowerCase()
+      if (!['gc', 'linearize', 'both', 'compare'].includes(profileRaw)) {
+        throw new Error(`profile "${profileRaw}" 不支持；可用 gc / linearize / both / compare`)
+      }
+
+      // ── compare：两版差异（只读，不写盘、不弹确认单）────────────────────
+      if (profileRaw === 'compare') {
+        const otherRaw = optionalString(args, 'other')
+        if (otherRaw === undefined) throw new Error('compare 需要 other：给出另一份 PDF 的路径')
+        const other = resolve(otherRaw)
+        if (!existsSync(other)) throw new Error(`另一份文件不存在：${other}`)
+        const mine = new Uint8Array(await readFile(source))
+        const theirs = new Uint8Array(await readFile(other))
+        const gate = authorize({
+          tool: 'pdf_optimize',
+          action: 'compare',
+          parameters: { other },
+          inputs: [source, other],
+          effects: ['只读：只比对文字层，不修改任何文件'],
+          hints: ['差异以文字层为准；扫描件会如实报告"无法比对"'],
+          ...confirmationArgs(options, args),
+        })
+        if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+        if (gate.kind === 'refused') throw new Error(gate.message)
+        const compared = await comparePdfs(mine, theirs)
+        return { text: renderCompareReport(basename(source), basename(other), compared) }
+      }
+
+      const profile = profileRaw as OptimizeProfile
+      const output = resolveOutput(source, args, '-optimized', options.workspaceRoot)
+      const bytes = new Uint8Array(await readFile(source))
+      const gate = authorize({
+        tool: 'pdf_optimize',
+        action: profile,
+        parameters: { profile },
+        inputs: [source],
+        output,
+        effects: [
+          '不修改源文件，结果写入新的 PDF',
+          profile === 'linearize'
+            ? '重排为线性化结构（Web 上可先看第一页）'
+            : profile === 'gc'
+              ? '重写对象层：生成对象流、重压缩流、清理未引用资源（页面内容不变）'
+              : '先垃圾回收再线性化',
+          '注意：这是对象层重写，**不改变页面内容**；想大幅减小体积请用 pdf_images 导出为 JPEG',
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      const result = await optimizePdf(bytes, profile)
+      await writeFile(output, result.bytes)
+      const saving = describeSaving(bytes.length, result.bytes.length)
+      const qpdfCheck = await runQpdf(['--check'], result.bytes, 'read-only')
+      return {
+        text: [
+          `已生成：${output}`,
+          `profile=${profile}（${profile === 'linearize' ? '线性化' : profile === 'gc' ? '垃圾回收' : '垃圾回收 + 线性化'}）：${saving.text}。`,
+          `结构校验：qpdf --check exit ${qpdfCheck.exit}${qpdfCheck.exit === 0 ? '（通过）' : '（有问题，请勿使用）'}。`,
+          '说明：优化只重写对象层，页面内容/文字/注释都不变。若体积没降（甚至略增），通常是因为图片已经压过、'
+            + '而对象流本身有额外开销——这种情况请直接用源文件，不要用这次的结果。',
+        ].join('\n'),
+      }
+    },
+  }
+
   // ── split 2-up（页级装配）─────────────────────────────────────────────────
   //
   // 把 A3 试卷对半切成 A4 是页级装配里最容易做错的一件：渲染再切会丢文字层、字体与矢量。
@@ -2035,7 +3318,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
   // Compile to the registry-ready shape. Argument validation is wrapped around
   // `execute` here, so a malformed call fails with a readable message instead of
   // a TypeError from deep inside a tool body.
-  return [inspect, extract, findAnswers, searchable, edit, replaceLine, watermark, protect, preview, split, crop, arrange, merge].map((definition) => {
+  return [inspect, extract, findAnswers, searchable, edit, replaceLine, annotate, pageText, images, formTool, layout, metadata, redact, optimize, watermark, protect, preview, split, crop, arrange, merge].map((definition) => {
     const parameters = compileParameters(definition.parameters)
     const execute = definition.execute
     return {

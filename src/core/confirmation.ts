@@ -202,6 +202,24 @@ export function classifyGate(input: GateInput): GateDecision {
     reasons.push(reason)
   }
   if (input.tool === 'pdf_edit_text') mark('改写正文文字属于不可逆操作')
+  // 写注释同样改变文件内容：阅读器里能删，但这次写入已经发生。
+  if (input.tool === 'pdf_annotate') mark('写入注释属于不可逆的内容改动')
+  // 写字同样是改文件内容（写进内容流，属于文档内容而不是批注）。
+  if (input.tool === 'pdf_text') mark('把文字写进页面属于不可逆的内容改动')
+  // 导出会在磁盘上落一堆图片、合成会写出新 PDF：都属于写盘操作。
+  if (input.tool === 'pdf_images') mark('导出/合成都会写出新文件')
+  // 填写/压平表单会改写文件内容（压平不可逆）。只读的 action=list 由调用方传 proceed。
+  if (input.tool === 'pdf_form' && input.action !== 'list') mark('填写或压平表单会改写内容')
+  // 统一尺寸会改页面几何、拼版会重建页面结构，都不可逆。
+  if (input.tool === 'pdf_layout') mark(`${titleFor(input.tool, input.action)}会改写页面几何/结构`)
+  // 写属性/清除属性、改书签都会改写文件（只读的 get / outline-list 走 proceed）。
+  if (input.tool === 'pdf_redact' && input.action === 'apply') mark('真删除内容不可逆')
+  // 优化会重写整个文件的字节结构（内容不变，但文件确实被改写了）。
+  // compare 是只读比对（不写盘），不该被当成写操作拦下来。
+  if (input.tool === 'pdf_optimize' && input.action !== 'compare') mark('重写对象层会生成新文件')
+  if (input.tool === 'pdf_metadata' && input.action !== 'get' && input.action !== 'outline-list') {
+    mark(`${titleFor(input.tool, input.action)}会改写文档信息`)
+  }
   if (input.tool === 'pdf_replace_line') mark('整行重绘会抹掉该绘制组的原文并重画，属于不可逆操作')
   if (input.tool === 'pdf_watermark' && input.action === 'remove') mark('移除水印会改写页面内容流')
   if (input.tool === 'pdf_protect' && (input.action === 'encrypt' || input.action === 'decrypt')) {
@@ -283,6 +301,32 @@ export function requiresConfirmation(gate: ConfirmationGate, policy: Confirmatio
 function titleFor(tool: string, action: string): string {
   if (tool === 'pdf_edit_text') return '改写文字'
   if (tool === 'pdf_replace_line') return '整行重绘'
+  if (tool === 'pdf_annotate') return '添加标注'
+  if (tool === 'pdf_text') return '页面写字'
+  if (tool === 'pdf_images') return action === 'build' ? '图片合成 PDF' : '导出页面图片'
+  if (tool === 'pdf_optimize') {
+    if (action === 'compare') return '比对两版差异'
+    return action === 'linearize' ? '线性化' : action === 'both' ? '垃圾回收 + 线性化' : '垃圾回收'
+  }
+  if (tool === 'pdf_redact') return action === 'apply' ? '矩形密文（真删除）' : '密文空跑检查'
+  if (tool === 'pdf_metadata') {
+    if (action === 'get') return '读取文档信息'
+    if (action === 'set') return '写入文档信息'
+    if (action === 'clear') return '清除文档信息'
+    if (action === 'outline-list') return '列出书签'
+    if (action === 'outline-set') return '生成书签'
+    return '删除书签'
+  }
+  if (tool === 'pdf_layout') {
+    if (action === 'nup') return 'N-up 拼版'
+    if (action === 'booklet') return '生成小册子版面'
+    return '统一页面尺寸'
+  }
+  if (tool === 'pdf_form') {
+    if (action === 'list') return '列出表单字段'
+    if (action === 'flatten') return '压平表单'
+    return '填写表单'
+  }
   if (tool === 'pdf_make_searchable') return '生成可搜索 PDF'
   if (tool === 'pdf_watermark') {
     if (action === 'remove') return '移除水印'

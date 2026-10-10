@@ -32,7 +32,7 @@
     "test:ocr": "node test/ocr.test.mjs",
     "test:searchable": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/searchable-pdf.test.mjs",
     "test:pipeline": "node --experimental-strip-types test/pipeline.test.mjs",
-    "test": "npm run test:routes && npm run test:text-layer && npm run test:content-stream && npm run test:readable-runs && npm run test:text-editor && npm run test:line-redraw && npm run test:canvas-ui && npm run test:confirm-ui && npm run test:tools && npm run test:plugin-wiring && npm run test:confirmation && npm run test:watermark && npm run test:qpdf && npm run test:searchable && npm run test:pipeline && npm run test:page-assembly && npm run test:answer-pages && npm run test:commit-tools",
+    "test": "npm run test:routes && npm run test:text-layer && npm run test:content-stream && npm run test:readable-runs && npm run test:text-editor && npm run test:line-redraw && npm run test:canvas-ui && npm run test:confirm-ui && npm run test:tools && npm run test:plugin-wiring && npm run test:confirmation && npm run test:watermark && npm run test:qpdf && npm run test:searchable && npm run test:pipeline && npm run test:page-assembly && npm run test:answer-pages && npm run test:annotate && npm run test:pdf-text && npm run test:pdf-images && npm run test:pdf-form && npm run test:pdf-layout && npm run test:pdf-redact && npm run test:pdf-metadata && npm run test:pdf-optimize && npm run test:commit-tools",
     "test:content-stream": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/content-stream.test.mjs",
     "test:text-editor": "node --experimental-strip-types test/text-editor.test.mjs",
     "test:line-redraw": "node --import ./test/support/dom-shim.mjs --experimental-strip-types test/line-redraw.test.mjs",
@@ -50,7 +50,15 @@
     "test:confirmation": "node --experimental-strip-types test/confirmation.test.mjs",
     "test:page-assembly": "node --experimental-strip-types test/page-assembly.test.mjs",
     "test:answer-pages": "node --experimental-strip-types test/answer-pages.test.mjs",
-    "test:commit-tools": "node test/commit-tools.test.mjs"
+    "test:commit-tools": "node test/commit-tools.test.mjs",
+    "test:annotate": "node --experimental-strip-types test/annotate.test.mjs",
+    "test:pdf-text": "node --experimental-strip-types test/pdf-text.test.mjs",
+    "test:pdf-images": "node --experimental-strip-types test/pdf-images.test.mjs",
+    "test:pdf-form": "node --experimental-strip-types test/pdf-form.test.mjs",
+    "test:pdf-layout": "node --experimental-strip-types test/pdf-layout.test.mjs",
+    "test:pdf-redact": "node --experimental-strip-types test/pdf-redact.test.mjs",
+    "test:pdf-metadata": "node --experimental-strip-types test/pdf-metadata.test.mjs",
+    "test:pdf-optimize": "node --experimental-strip-types test/pdf-optimize.test.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.8",

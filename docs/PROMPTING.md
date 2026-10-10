@@ -317,10 +317,155 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 
 ---
 
+### 模板 13 · 批改：高亮一句话 + 盖个"已阅"
+
+```
+1) pdf_annotate path="作业.pdf" action=highlight page=2 find="解：设 x 为"
+     color="#ffd400" opacity=0.4 output="/tmp/批改.pdf"
+2) pdf_annotate path="/tmp/批改.pdf" action=stamp page=1
+     rect={x:430,y:60,width:120,height:50} contents="已阅 10/10"
+```
+
+要点：文本标记用 `find` 就能定位，不需要自己算坐标；`rect` 的原点是**左下角**（页脚附近 y 很小）。
+
+### 模板 14 · 加一条便签 / 写一段自由文本
+
+```
+pdf_annotate path="报告.pdf" action=note page=3 rect={x:520,y:760,width:24,height:24} contents="这里数据要复核"
+pdf_annotate path="报告.pdf" action=freetext page=1 rect={x:60,y:700,width:220,height:30} contents="内部资料 请勿外传"
+```
+
+注意：`freetext` **不自动换行**，需要换行就在 `contents` 里写 `\n`；太长的文字会超出框宽（结果里会提示）。
+
+### 模板 15 · 给整份材料编页码 + 页眉
+
+```
+pdf_text path="材料.pdf" action="page-number" pages="all" text="第 {page} / {total} 页"
+  position="bottom-center" fontSize=9 output="/tmp/材料-带页码.pdf"
+
+pdf_text path="/tmp/材料-带页码.pdf" action="header-footer" header="内部资料 · {date}"
+  footer="第 {page} / {total} 页 · {filename}" output="/tmp/材料-定稿.pdf"
+```
+
+先页码后页眉可以，一次做完也行（`header-footer` 的 `footer` 就支持 `{page}/{total}`）。
+`pages` 支持 `1-3,7`、`odd`、`even`。
+
+### 模板 16 · 加 Bates 编号（卷宗/证据材料归档）
+
+```
+pdf_text path="卷宗.pdf" action="bates" pages="all" prefix="ABC-" digits=6 suffix="" start=1
+  position="bottom-right" fontSize=8
+```
+
+编号按**选中顺序**递增：选 `2-4` 且 `start=7` → 第 2/3/4 页分别得到 `ABC-000007/8/9`。
+
+### 模板 17 · 把 PDF 的几页导出成图片（放进 PPT / 发微信）
+
+```
+pdf_images path="报告.pdf" action="export" pages="1-3" format="png" scale=3 outputDir="/tmp/报告图"
+```
+
+要小体积就 `format="jpeg" quality=0.8`；要高清就 `scale=3`（≈216dpi）。
+导出的是栅格化图片——文字不可搜索，别拿它当"可搜索版"。
+
+### 模板 18 · 把一堆照片/扫描图合成一个 PDF
+
+```
+pdf_images action="build" images=["/tmp/1.jpg","/tmp/2.jpg","/tmp/3.png"]
+  pageSize="a4" margin=24 output="/tmp/相册.pdf"
+```
+
+`images` 的**顺序就是页面顺序**；`pageSize="fit"` 时页面正好等于图片尺寸（不缩放）。
+
+### 模板 19 · 填一份表单（Excel 导出的名单 → PDF 表单）
+
+```
+1) pdf_form path="报名表.pdf" action="list"          # 先看字段名与可选项
+2) pdf_form path="报名表.pdf" action="fill"
+     values={ "姓名": "张三", "同意条款": true, "性别": "Female", "城市": "Shanghai" }
+     flatten=true output="/tmp/报名表-张三.pdf"
+```
+
+字段名必须与 `list` 给的**完全一致**（大小写、空格都算）；写错会报错并列出可用字段名。
+要归档/发给别人就加 `flatten=true`（压平后不可再编辑）；还要留着继续填就别加。
+
+### 模板 20 · 把 Letter 材料统一成 A4 / 拼版省纸 / 做小册子
+
+```
+# 统一成 A4（缩放，文字仍可搜索）
+pdf_layout path="材料.pdf" action="resize" pageSize="a4" output="/tmp/材料-A4.pdf"
+
+# 一张 A4 放 4 页（讲义/资料省纸）
+pdf_layout path="材料.pdf" action="nup" perSheet=4 pageSize="a4" margin=12 gap=8 output="/tmp/材料-4up.pdf"
+
+# 骑马钉小册子（打印后对折装订）
+pdf_layout path="材料.pdf" action="booklet" pageSize="a4-landscape" output="/tmp/材料-小册子.pdf"
+```
+
+`resize` 是**缩放内容**（页面尺寸变了、内容跟着缩）；只想去掉白边/黑边请用 `pdf_crop`（只裁不缩）。
+文件里有批注时，缩放/拼版不会同步处理它们，结果里会提示。
+
+### 模板 21 · 对外发布前去掉作者/标题等隐私信息 + 加书签
+
+```
+pdf_metadata path="定稿.pdf" action="get"                     # 先看现在有什么
+pdf_metadata path="定稿.pdf" action="set"
+  values={ "title": "2026 届复习提纲", "author": "教务处" } output="/tmp/定稿-属性.pdf"
+pdf_metadata path="/tmp/定稿-属性.pdf" action="outline-set"
+  outline=[ {"title":"第一章 集合","page":1}, {"title":"第二章 函数","page":12} ]
+  output="/tmp/定稿-书签.pdf"
+# 彻底去隐私（作者/标题/时间都清掉）
+pdf_metadata path="/tmp/定稿-书签.pdf" action="clear" output="/tmp/定稿-发布版.pdf"
+```
+
+书签目前**只支持一层**（扁平）；`{page}` 是**真实页号**。
+
+### 模板 22 · 涂掉敏感信息（真删除，不是画黑框）
+
+```
+1) pdf_extract_text path="合同.pdf" page=3           # 拿到要涂那段的坐标
+2) pdf_redact path="合同.pdf" action="preview"
+     rects=[ {"page":3,"x":60,"y":700,"width":200,"height":20} ]
+3) pdf_redact path="合同.pdf" action="apply"
+     rects=[ {"page":3,"x":60,"y":700,"width":200,"height":20} ] output="/tmp/合同-脱密.pdf"
+```
+
+**必须先 preview 再 apply**：空跑会告诉你这条框能删掉几段文字。若工具**拒绝输出**并提示"仍能被提取出来"，
+说明这页结构复杂（多段流/嵌套 XObject）——请改用
+`pdf_images action=export` → 图片涂黑 → `pdf_images action=build` 重新合成，那是绝对可靠的路径。
+
+### 模板 23 · 两版差异：改稿前后差在哪几页
+
+```
+pdf_optimize path="定稿v1.pdf" profile="compare" other="定稿v2.pdf"
+```
+
+输出会逐页列出新增/删除/改动，例如「第 1 页（有改动）+ 1 / 30」。
+只读、不写盘。扫描件没有文字层时会明确说"无法按文字比对"。
+
+### 模板 24 · 瘦身 / 线性化（以及目录批量）
+
+```
+pdf_optimize path="定稿.pdf" profile="gc" output="/tmp/定稿-优化.pdf"
+pdf_optimize path="定稿.pdf" profile="linearize" output="/tmp/定稿-web.pdf"
+```
+
+**先看清楚结果里的字节数**：实测图片占主导的文档可能只省 ~2%，也可能不变甚至略增；
+若没变小，就继续用源文件（不要为了"优化过"而用更大的文件）。
+真正想大幅变小：`pdf_images action="export" format="jpeg" quality=0.8`（会栅格化，文字不可搜索）。
+
+**目录批量**没有专门工具（批量是编排，不是 PDF 操作）：对每份文件依次调用
+`pdf_layout`（统一尺寸）→ `pdf_text`（页码/页眉）→ `pdf_optimize`（瘦身）即可，
+每一步都有确认单，逐个确认。
+
 ## 五、反例一览（以及为什么会返工）
 
 | 这么说 | 会怎样 | 该怎么说 |
 |---|---|---|
+| "把这段涂黑就行" | 只画黑框是**假密文**：文字仍在内容流里，复制/提取照样拿得到 | 用 `pdf_redact`（真删），并先 `preview` 看能删几条 |
+| "导出成图片但还要能搜索" | 导出必然是栅格化，文字变图片、搜索不到 | 要可搜索就保留 PDF（`pdf_make_searchable`），导出图片只用于展示 |
+| "把第 2 页那句话高亮一下" | 只给 `find` 时只能按文字层定位（扫描件没有文字层会明确报错）；跨行只取第一行 | 说清页码 + 原句，或先 `pdf_make_searchable` |
+| "把整页涂成黄色" | 文本标记只覆盖**匹配到的文字**，不会整页变黄 | 整页要的是 `box` + `rect`（或 `pdf_watermark`） |
 | "把这个词改长一点" | `pdf_edit_text` 做不到不重叠：它只换字形串、**不移动后面的文字**（PDF 没有段落重排），改长就会压到下一个字上；引擎会提示"可能向右溢出"但不阻止 | 用 `pdf_replace_line`（整行重绘）：先 `runs=true` 拿到目标行任意一个 id，再用 `text="<这一整组的新文字>"` 重画；默认 `shiftSiblings: true` 会把同一视觉行右侧的片段整体右移让位（右侧组若是相对定位锚定则不平移并给重叠警告）。若这一组里还有别的文字，先确认是整组重写还是改回等长替换 |
 | "帮我处理下这个 PDF" | 没有文件、动作、输出。助手只能猜，最坏的结果是"看起来成功"（改到了别的东西 / 什么也没改） | 按模板 1 先探，再按模板 2–7 挑一个 |
 | "把里面那句话改一下" | `pdf_edit_text` 必须要 `edits[].targetId`，而 id 只能从 `runs=true` 里拿；不给页码和原文就无从下手 | "先 `runs=true` 列出文字块，我要改的是第 2 页那条「…」" |

@@ -40,7 +40,7 @@ import { DEFAULT_CONFIRMATION_POLICY, type ConfirmationPolicy } from './core/con
 import { buildToolDefinitions, type AttachmentSink, type ToolRegistry } from './host/tools.ts'
 
 /** Tool names, listed once so the boot log can name them. */
-const TOOL_NAMES = ['pdf_inspect', 'pdf_extract_text', 'pdf_find_answers', 'pdf_make_searchable', 'pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_preview', 'pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge']
+const TOOL_NAMES = ['pdf_inspect', 'pdf_extract_text', 'pdf_find_answers', 'pdf_make_searchable', 'pdf_edit_text', 'pdf_replace_line', 'pdf_annotate', 'pdf_text', 'pdf_images', 'pdf_form', 'pdf_layout', 'pdf_metadata', 'pdf_redact', 'pdf_optimize', 'pdf_watermark', 'pdf_protect', 'pdf_preview', 'pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge']
 
 export { PDF_API_PREFIX, PDF_SURFACE_SCRIPT } from './host/routes.ts'
 export { analyzeDocument, exportSearchable } from './host/engine.ts'
