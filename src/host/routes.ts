@@ -44,7 +44,11 @@ interface AnalysisLike {
   pages: number
   elapsedMs: number
   notes: string[]
-  triage: Array<{ page: number; kind: string; evidence: Record<string, unknown>; width: number; height: number }>
+  /** 文档涉及的题型（与 engine 的 AnalysisResult 对齐）。 */
+  kinds: string[]
+  // 与 engine 的 `AnalysisResult` 保持结构兼容：`TriageEvidence` 是具体接口，
+  // 没有字符串索引签名，所以这里用 `object`（否则传参方向会互相不可赋值）。
+  triage: Array<{ page: number; kind: string; evidence: object; width: number; height: number }>
   content: Array<{
     page: number
     width: number
@@ -665,7 +669,9 @@ export function makePdfRoutes(options: { workspaceRoot: string }): WebRouteLike[
             return
           }
           const mode = body.mode === 'cover' ? 'cover' : 'invisible'
-          const result = await exportSearchable(analysis, output, mode)
+          // `AnalysisLike` 是本文件面向浏览器的最小形状（字段更少），与 engine 的完整类型
+        // 结构上不完全一致；这里显式断言，避免为了一个只读展示接口去改两边的定义。
+        const result = await exportSearchable(analysis as never, output, mode)
           writeJson(res, 200, { ok: true, ...result })
         } catch (error) {
           writeJson(res, 500, { ok: false, error: String((error as Error).message) })

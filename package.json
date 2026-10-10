@@ -58,7 +58,8 @@
     "test:pdf-layout": "node --experimental-strip-types test/pdf-layout.test.mjs",
     "test:pdf-redact": "node --experimental-strip-types test/pdf-redact.test.mjs",
     "test:pdf-metadata": "node --experimental-strip-types test/pdf-metadata.test.mjs",
-    "test:pdf-optimize": "node --experimental-strip-types test/pdf-optimize.test.mjs"
+    "test:pdf-optimize": "node --experimental-strip-types test/pdf-optimize.test.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.8",
@@ -70,8 +71,10 @@
   },
   "devDependencies": {
     "@jspawn/qpdf-wasm": "^0.0.2",
+    "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
     "jsdom": "^29.1.1",
-    "qpdf-wasm": "^0.1.0"
+    "qpdf-wasm": "^0.1.0",
+    "typescript": "^7.0.2"
   }
 }

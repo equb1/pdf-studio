@@ -124,7 +124,7 @@ function prependTransform(doc: PDFDocument, page: { node: { get(key: unknown): u
   const suffix = context.register(PDFRawStream.of(context.obj({}), Buffer.from('\nQ', 'latin1')))
   const contents = page.node.get(PDFName.of('Contents'))
   const existing = contents instanceof PDFArray ? contents.asArray().map(item => item) : [contents]
-  page.node.set(PDFName.of('Contents'), context.obj([prefix, ...existing, suffix]))
+  page.node.set(PDFName.of('Contents'), context.obj([prefix, ...existing, suffix] as never))
 }
 
 /**

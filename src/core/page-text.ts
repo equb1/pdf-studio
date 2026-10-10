@@ -138,7 +138,8 @@ export interface ResolvedDrawFont {
 
 /** 解析并嵌入一个能渲染该文字的字体（必要时注册 fontkit）。 */
 export async function resolveDrawFont(
-  doc: { embedFont(bytes: Uint8Array, options?: { subset?: boolean }): Promise<unknown>; registerFontkit?(adapter: unknown): void },
+  // pdf-lib 的 embedFont 既能收字体字节，也能收内置字体名（StandardFonts 是字符串枚举）。
+  doc: { embedFont(bytes: Uint8Array | string, options?: { subset?: boolean }): Promise<unknown>; registerFontkit?(adapter: unknown): void },
   text: string,
   explicitPath?: string,
 ): Promise<ResolvedDrawFont> {

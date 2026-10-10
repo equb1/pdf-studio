@@ -563,7 +563,7 @@ export async function addWatermark(
       const loaded = await resolveFontForText(text, spec.fontPath)
       if (loaded !== null) {
         const fontkit = await loadFontkitAdapter()
-        if (fontkit !== null) doc.registerFontkit(fontkit)
+        if (fontkit !== null) doc.registerFontkit(fontkit as never)
         const font = await doc.embedFont(loaded.bytes, { subset: true })
         markFont = { name: FONT_RESOURCE_NAME, ref: font.ref }
         // The operand MUST be the font's encoded glyph string, not the text: a
@@ -623,8 +623,8 @@ export async function addWatermark(
       ],
       Name: MARK_RESOURCE_NAME,
       Resources: doc.context.obj({
-        ...(markFont === undefined ? {} : { Font: doc.context.obj({ [markFont.name]: markFont.ref }) }),
-        ...(markImage === undefined ? {} : { XObject: doc.context.obj({ [markImage.name]: markImage.ref }) }),
+        ...(markFont === undefined ? {} : { Font: doc.context.obj({ [markFont.name]: markFont.ref } as never) }),
+        ...(markImage === undefined ? {} : { XObject: doc.context.obj({ [markImage.name]: markImage.ref } as never) }),
       }),
     }) as never,
     deflateSync(Buffer.from(markOps.join('\n'), 'latin1')),

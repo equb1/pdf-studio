@@ -432,7 +432,7 @@ function pageIndexOf(doc: PDFDocument, page: PDFPage): number {
  * 「先左后右 / 先上后下」的顺序得到结果。
  */
 export function splitPageIntoHalves(doc: PDFDocument, page: PDFPage, options: SplitOptions): [PDFPage, PDFPage] {
-  const context = doc.context as unknown as { obj(value: unknown): unknown; register(value: unknown): unknown }
+  const context = doc.context as unknown as { obj(value: unknown): unknown; register(value: unknown): unknown; lookup(value: unknown): unknown }
   const { halves } = planSplit(page, options.axis, options.gutterPt)
 
   const originalRefs = contentRefsOf(page as never, context)
@@ -462,7 +462,7 @@ export function splitPageKeepingHalf(doc: PDFDocument, page: PDFPage, options: K
   if (!keepMatchesAxis(options.axis, options.keep)) {
     throw new Error(`这一页是${axisLabel(options.axis)}排列，keep=${options.keep} 不适用；${axisLabel(options.axis)}排列请用 ${keepOptionsFor(options.axis)}`)
   }
-  const context = doc.context as unknown as { obj(value: unknown): unknown; register(value: unknown): unknown }
+  const context = doc.context as unknown as { obj(value: unknown): unknown; register(value: unknown): unknown; lookup(value: unknown): unknown }
   const { halves } = planSplit(page, options.axis, options.gutterPt)
   const originalRefs = contentRefsOf(page as never, context)
   const index = options.axis === 'left-right'

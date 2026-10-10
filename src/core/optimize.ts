@@ -40,7 +40,7 @@ export async function optimizePdf(
   profile: OptimizeProfile,
 ): Promise<{ bytes: Uint8Array; diagnostics: string }> {
   const result = await runQpdf(profileArgs(profile), bytes, 'rewrite')
-  if (result.exit !== 0) {
+  if (result.exit !== 0 || result.bytes === undefined) {
     throw new Error(`优化失败（qpdf exit ${result.exit}）：${result.output.slice(0, 200)}`)
   }
   return { bytes: result.bytes, diagnostics: result.output }

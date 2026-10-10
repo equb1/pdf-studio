@@ -118,13 +118,26 @@ export interface ToolRegistry {
   register(definition: unknown): void
 }
 
+/** 数组元素的形状：比顶层参数轻，`description` 可选（`items: { type: 'integer' }` 是合法写法）。 */
+interface ParamItems {
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
+  description?: string
+  required?: boolean
+  enum?: readonly string[]
+  items?: ParamItems
+  properties?: Record<string, ParamSpec>
+  additionalProperties?: boolean
+}
+
 /** Shape of a tool's parameter description, as `defineTool` expects it. */
 interface ParamSpec {
   type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
   required?: boolean
   enum?: readonly string[]
-  items?: ParamSpec
+  items?: ParamItems
   properties?: Record<string, ParamSpec>
+  /** 对象参数是否允许额外字段（嵌套属性表用 false 收紧契约）。 */
+  additionalProperties?: boolean
   description: string
 }
 
@@ -261,7 +274,7 @@ export interface RegistryTool {
 }
 
 /** The value/spec node keywords this compiler understands. */
-function compileParam(spec: ParamSpec, path: string): Record<string, unknown> {
+function compileParam(spec: ParamSpec | ParamItems, path: string): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   out.type = spec.type
   if (spec.enum !== undefined) out.enum = [...spec.enum]
@@ -1318,7 +1331,9 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
         if (gate.kind === 'refused') throw new Error(gate.message)
         const result = await stripWatermarks(source, output, { dryRun: false, minConfidence })
-        if (result.dryRun) {
+        // 用 `in` 收窄而不是 `result.dryRun`：返回值是联合类型，靠判别属性在部分
+        // TypeScript 版本下收不窄，而 `outputPath` 只存在于非 dry-run 分支。
+        if (!('outputPath' in result)) {
           return { text: `没有置信度 ≥ ${minConfidence} 的可移除水印，文件未改动。跳过 ${result.skipped.length} 个低置信度候选。` }
         }
         const lines = [
@@ -1583,7 +1598,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
           if (pageNumber > doc.numPages) throw new Error(`页码 ${pageNumber} 超出范围（共 ${doc.numPages} 页）`)
           lines = (await extractTextLayer(doc, pageNumber)).map(line => ({ text: line.text, rect: line.rect }))
         } finally {
-          await doc.destroy?.()
+          await doc.dispose()
         }
         const hit = lines.find(line => line.text.includes(find))
         if (hit === undefined) {
@@ -1934,7 +1949,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
           action: 'build',
           parameters: { images: list, pageSize: pageSizeRaw, margin, output },
           inputs: list,
-          output: { path: output, overwrites: existsSync(output) },
+          output,
           hints: ['顺序就是 images 数组的顺序；想重排就先调整数组'],
           effects: ['不改动任何源图片', `生成 1 个 PDF（${list.length} 页）`],
           ...confirmationArgs(options, args),
@@ -1991,7 +2006,8 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         action: 'export',
         parameters: { pages: selected, format, scale, quality, outputDir: dir },
         inputs: [source],
-        output: { path: join(dir, `${basename(source, extname(source))}-p${selected[0]}.${format === 'jpeg' ? 'jpg' : 'png'}`), overwrites: false },
+        // 导出是一批文件：这里报第一个目标路径；真正的目录在确认单的"影响"里说明。
+        output: join(dir, `${basename(source, extname(source))}-p${selected[0]}.${format === 'jpeg' ? 'jpg' : 'png'}`),
         hints: ['想拉高清晰度就把 scale 调大（3 ≈ 216dpi）', '只要某几页就传 pages="1-3"'],
         effects: ['不修改源文件', `在目录里生成 ${selected.length} 个图片文件`, '页面会按 scale 倍率栅格化，文字变成图片'],
         ...confirmationArgs(options, args),
@@ -2533,7 +2549,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
             targetLineByPage.set(pageNumber, allLines)
           }
         } finally {
-          await probe.destroy?.()
+          await probe.dispose()
         }
       }
       const result = await redactPages(new Uint8Array(await readFile(source)), { boxes, color, targetsByPage, targetLinesByPage: targetRectsByPage })
@@ -2564,24 +2580,26 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
               }
             }
           }
-        } finally {
-          await beforeDoc.destroy?.()
-          await afterDoc.destroy?.()
-        }
-        // 第二道护栏：**误删**别的行同样不可接受（密文工具最容易"顺手删掉半页"）。
-        if (leftovers.length === 0) {
-          for (const pageNumber of [...new Set(boxes.map(box => box.page))]) {
-            const beforeLines = (await extractTextLayer(beforeDoc, pageNumber)).map(line => line.text.trim()).filter(text => text.length > 0)
-            const afterLines = (await extractTextLayer(afterDoc, pageNumber)).map(line => line.text.trim()).filter(text => text.length > 0)
-            const targets = targetsByPage.get(pageNumber) ?? []
-            const collateral = beforeLines.filter(text => !targets.includes(text) && !afterLines.includes(text))
-            if (collateral.length > 0) {
-              throw new Error(
-                `密文会影响框外内容，已拒绝输出：第 ${pageNumber} 页的「${collateral.slice(0, 3).join('、')}」等 ${collateral.length} 行本不该被删。`
-                + '请把矩形缩到刚好覆盖目标文字，或改用"导出图片→涂黑→重新合成"的方式。',
-              )
+          // 第二道护栏：**误删**别的行同样不可接受（密文工具最容易"顺手删掉半页"）。
+          // 注意：它必须留在 `try` 里——文档在 `finally` 里就 dispose 了，
+          // 放到外面会变成"对已释放的文档取页"（实测崩在 pdf.js 的 getPage）。
+            if (leftovers.length === 0) {
+            for (const pageNumber of [...new Set(boxes.map(box => box.page))]) {
+              const beforeLines = (await extractTextLayer(beforeDoc, pageNumber)).map(line => line.text.trim()).filter(text => text.length > 0)
+              const afterLines = (await extractTextLayer(afterDoc, pageNumber)).map(line => line.text.trim()).filter(text => text.length > 0)
+              const targets = targetsByPage.get(pageNumber) ?? []
+              const collateral = beforeLines.filter(text => !targets.includes(text) && !afterLines.includes(text))
+              if (collateral.length > 0) {
+                throw new Error(
+                  `密文会影响框外内容，已拒绝输出：第 ${pageNumber} 页的「${collateral.slice(0, 3).join('、')}」等 ${collateral.length} 行本不该被删。`
+                    + '请把矩形缩到刚好覆盖目标文字，或改用"导出图片→涂黑→重新合成"的方式。',
+                  )
+                }
+              }
             }
-          }
+        } finally {
+          await beforeDoc.dispose()
+          await afterDoc.dispose()
         }
         if (leftovers.length > 0) {
           throw new Error(
@@ -2606,8 +2624,8 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         '注意：文字已从内容流删除（可用 pdf_extract_text 复核）；但字体子集里的字形轮廓未清理，'
           + '需要更强保证时应当只发布导出的图片版。',
         ...(result.report.imagePages.length > 0
-          ? [`注意：第 ${result.report.imagePages.join('、')} 页含图片对象——文字层删了，但**图片像素里的内容不会被修补**（若这几页是扫描件，请核对是否仍能看出敏感信息），`
-            + '请核对这几页是否仍能看出敏感信息。']
+          ? [`注意：第 ${result.report.imagePages.join('、')} 页含图片对象——文字层删了，但**图片像素里的内容不会被修补**`
+            + '（若这几页是扫描件，请核对是否仍能看出敏感信息）。']
           : []),
       ]
       if (!isApply) {
@@ -2898,7 +2916,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         }
         produced.push({ source: item.index + 1, axis: item.axis })
       }
-      const bytes = await out.save({ updateMetadata: false })
+      const bytes = await out.save()
       await mkdir(dirname(output), { recursive: true })
       await writeFile(output, bytes)
 
@@ -3059,7 +3077,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         setCropBoxOnly,
         sourcePath: source,
       })
-      const bytes = await doc.save({ updateMetadata: false })
+      const bytes = await doc.save()
       await mkdir(dirname(output), { recursive: true })
       await writeFile(output, bytes)
 
@@ -3190,7 +3208,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       const copied = await out.copyPages(doc, order)
       for (const page of copied) out.addPage(page)
       const rotated = rotateSpec === undefined ? [] : rotatePages(out, rotateSpec.indices, rotateSpec.angle)
-      const bytes = await out.save({ updateMetadata: false })
+      const bytes = await out.save()
       await mkdir(dirname(output), { recursive: true })
       await writeFile(output, bytes)
 
@@ -3291,7 +3309,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       if (gate.kind === 'refused') throw new Error(gate.message)
 
       const result = await mergeDocuments(paths, rangesArg)
-      const bytes = await result.doc.save({ updateMetadata: false })
+      const bytes = await result.doc.save()
       await mkdir(dirname(output), { recursive: true })
       await writeFile(output, bytes)
 
@@ -3328,7 +3346,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       output: definition.output,
       async execute(args: Record<string, unknown>, exec?: unknown) {
         assertArgs(parameters, args, definition.name)
-        return execute(args, exec)
+        return execute(args)
       },
       ...(definition.presentCall === undefined ? {} : { presentCall: definition.presentCall }),
     }

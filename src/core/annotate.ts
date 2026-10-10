@@ -465,6 +465,6 @@ export async function addAnnotation(
     annots = context.obj([]) as PDFArray
     page.node.set(PDFName.of('Annots'), annots)
   }
-  annots.push(context.register(dict))
+  annots.push(context.register(dict) as never)
   return { dict, subtype, rect, appearance }
 }

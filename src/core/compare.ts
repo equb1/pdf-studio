@@ -90,8 +90,9 @@ export async function comparePdfs(
     }
     return { pagesA, pagesB, diffs, noTextPages: [...noText].sort((a, b) => a - b) }
   } finally {
-    await docA.destroy?.()
-    await docB.destroy?.()
+    // `PdfDoc` 只有 `dispose()`：写 `destroy?.()` 是**空操作**，会静默泄漏文档与 worker。
+    await docA.dispose()
+    await docB.dispose()
   }
 }
 

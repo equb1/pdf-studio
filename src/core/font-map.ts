@@ -147,7 +147,7 @@ export function readPageFonts(
 
   // `PDFDict.lookup(key, Type)` 在键不存在时会**抛异常**（不是返回 undefined），
   // 所以一封没有 /Font 的页面会让"读字体"这一步直接炸掉。lookupMaybe 才是安全的读法。
-  const fontDict = (resources as { lookupMaybe(key: unknown, type?: unknown): unknown })
+  const fontDict = (resources as unknown as { lookupMaybe(key: unknown, type?: unknown): unknown })
     .lookupMaybe(PDFName.of('Font'), PDFDict)
   if (!(fontDict instanceof PDFDict)) return out
 

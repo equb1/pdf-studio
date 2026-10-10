@@ -71,6 +71,7 @@ npm run test:pdf-layout     # 版面重排：缩放后尺寸与文字坐标 / N-
 npm run test:pdf-redact     # 矩形密文：删除前后提取对照 / 空框不虚报 / 门控 / 分档标注（当前单流档）
 npm run test:pdf-metadata   # 文档信息：中文属性回读 / 时间字段清除 / 书签 /Dest 指向页面 / 只读直通 / 门控
 npm run test:pdf-optimize   # 优化与比对：结构/文字不变 + qpdf 通过 / 字节数如实报告 / compare 增删行 / 门控
+npm run typecheck           # 类型检查（tsc --noEmit；需先装 devDeps: typescript + @types/node）
 npm run test:commit-tools   # 提交工具：自动草稿推断优先级 / 夹具不编标题 / R1+R2（含裸 --staged）+ R3
 ```
 

@@ -379,7 +379,7 @@ function summarizeParameters(parameters: Record<string, unknown>): string {
 }
 
 /** 生成多行确认单（浮层与纯文本共用这一份）。 */
-export function renderSheet(plan: Omit<OperationPlan, 'sheet'>): string {
+export function renderSheet(plan: Omit<OperationPlan, 'sheet' | 'planId'>): string {
   const lines: string[] = []
   for (const input of plan.inputs) {
     const stamp = new Date(input.mtimeMs).toLocaleString('zh-CN', { hour12: false })
