@@ -62,7 +62,9 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 | 批量裁掉白边 / 裁到指定矩形 | `pdf_crop` | `path`、`mode: fixed\|trim`、`box: {left,bottom,right,top}`（fixed 必填）、`margin`（默认 6pt）、`uniform`（默认 true）、`setCropBoxOnly`、`pages`、`output` |
 | 重排页序 / 删页 / 转正某几页 | `pdf_arrange` | `path`、`order`（必填：`1,3,5` / `1-3,7` / `odd-even` / `reverse` / `swap-pairs`）、`delete`、`rotate: {pages, angle}`、`output` |
 | 把多个文件按顺序合并 | `pdf_merge` | `paths`（≥2 个）、`ranges`（与 `paths` 一一对应，可省）、`output` |
-| 只想先看计划，不要执行 | 除 `pdf_preview` 外的 11 个工具 | `plan: true`（`watermark action=scan`、`protect action=check` 这两个只读分支不会返回计划） |
+| 找出哪几页是答案（只看不改） | `pdf_find_answers` | `path`、`pages`（省略=全部，支持 `5-7`）、`ocr`（默认 true；false 时图片页标"未做 OCR"）、`lang`（默认 `chi_sim+eng`）。结果给候选页 + 中文依据 + 置信度，**不给确认单** |
+| 把答案与试卷拆成两个 PDF | `pdf_find_answers` → `pdf_arrange` | 先 `pdf_find_answers` 拿候选，确认后用返回的两条 `pdf_arrange order="1-6"` / `order="7"` 各导出一次 |
+| 只想先看计划，不要执行 | 除 `pdf_preview`、`pdf_find_answers` 外的 11 个工具 | `plan: true`（`watermark action=scan`、`protect action=check` 这两个只读分支不会返回计划） |
 
 默认值（不指定时实际生效的值）：水印 `render=text`、`placement=tile`、`opacity=0.15`、`minConfidence=0.9`（仅 remove）、
 `fontSize=48`、`color=#d92626`、`margin=24`、`artifact=true`、`pages=全部`（`rotation` 平铺时 45°、其它 0°）；
@@ -74,7 +76,7 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 
 ---
 
-## 三、11 个可直接复制的模板
+## 三、12 个可直接复制的模板
 
 ### 模板 1 · 先探后报（什么都不改）
 
@@ -250,6 +252,23 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 3) 三个源文件的字节都没变。
 ```
 
+### 模板 12 · 把答案和试卷拆成两个 PDF
+
+```
+这个 PDF 是"试卷 + 答案"，先帮我确认哪几页是答案，我确认后再拆：
+- 第一步：pdf_find_answers path=<文件>.pdf（只读，不拆分；扫描页默认走 OCR，只看某几页就加 pages=6-7）
+- 第二步：把它给的候选页范围、置信度与逐页依据**原样**贴给我，等我确认；**不要**在这一步之后就动手
+- 第三步：确认后按它给的两条命令各导出一次（都是新文件，源文件不动）：
+  pdf_arrange path=<文件>.pdf order=<试卷页码> output=<输出路径>-试卷.pdf
+  pdf_arrange path=<文件>.pdf order=<答案页码> output=<输出路径>-答案.pdf
+
+做完告诉我：
+1) 候选是哪几页、置信度与依据（哪几页判成试卷、哪几页 mixed / 无法判定）；
+2) 若判成 mixed（答案与题目同页），不要硬拆，只说明"无法按页分离"并让我人工确认页码；
+3) 若候选为空，就直说"未找到答案页"，不要凑一个候选；
+4) 两个输出文件的页数与页序，以及源文件字节没变。
+```
+
 ---
 
 ## 四、确认机制怎么配合
@@ -258,7 +277,8 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 
 - 破坏性操作：改写正文（`pdf_edit_text`）、整行重绘（`pdf_replace_line`）、删水印（`remove`）、加密 / 解密（`encrypt` / `decrypt`），以及**全部四个页级装配工具**（`pdf_split` 拆分、`pdf_crop` 裁剪、`pdf_arrange` 重排、`pdf_merge` 合并）——它们改的是页面结构 / 顺序 / 几何，一律先出确认单；
 - 输出文件**已经存在**（会被覆盖）——任何用 `output` 的工具都可能命中，包括加水印；
-- 代价高（默认策略下**不会**自动拦，见本节末「默认问哪几类」）：`pdf_inspect analyze=true`、`pdf_extract_text` 整档且页数 > 20、`pdf_make_searchable` 页数 > 20；
+- 代价高（默认策略下**不会**自动拦，见本节末「默认问哪几类」）：`pdf_inspect analyze=true`、`pdf_extract_text` 整档且页数 > 20、`pdf_find_answers` 整档且 `ocr` 为真、页数 > 20、`pdf_make_searchable` 页数 > 20；
+  - `pdf_find_answers` 是**只读**工具，没有 `plan` / `confirm` / `force` 参数。它在 `always` 策略下遇到上面这条时只回一张确认单，让你把 `pages` 拆成不超过阈值的几段分别调用（例如 `pages=1-20`、`pages=21-40`）——不是"带 confirm 继续"那条路。
 - 有歧义：没给水印文字 / 图片；整档且页数 > 200；你说的是文件名而它对应多个文件（这一种直接拒绝并列出候选）；
 - 你或助手显式要求 `plan: true`（即使本来不需要确认，也先给计划）。
 
@@ -313,6 +333,7 @@ A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「
 | "先加密再解密，一起做" | 两个都是破坏性操作，各自要确认；而且解密的输入应该是**加密后的那个输出文件** | 分两步说，第二步的输入写清楚是上一步的输出 |
 | "帮我智能拆分所有页面" | 没有"智能"。`pdf_split` 只会**严格按中线**（`gutter: middle`，默认）或按检测到的中缝切：低倍渲染后取左右内容框之间的间隔（≥ 8pt 才算找到），找不到就回退中线。它不理解"哪一半是答案、哪一半是空白"这类语义 | 说清版式与目标："这是左右两栏，左=答案右=空白，只要空白版 → `keep=right`"；或"缝不在正中，用 `gutter=auto`" |
 | "把 A3 拆成 A4 打印" | 拆分**不缩放**，只改纸张边界：A3（420×297）切开正好是 A4（210×297），但 720×405 这类自定义尺寸切出来还是 360×405，**不是 A4**。工具只会在结果里提示"不是 A4"，不会自动缩到 A4（当前版本没有缩放/拼版能力） | 明确目标是"按版式对半切"还是"缩放到 A4"；后者当前不支持，先如实说明 |
+| "帮我智能分离所有试卷的答案" | 没有"智能"。`pdf_find_answers` 只会**按页**打分给候选（页首标题词 / 连续递增的速查表 / 解答句 / 题干特征），**只在答案独立成页**时才能接着用 `pdf_arrange` 拆开。答案与题目同页（`mixed`）时它明确说"无法按页分离"，不会去擦题目、也不会裁半页；手写答案、多列答案表、半页答案可能判成 `无法判定`/`mixed` | 说清前提："先 `pdf_find_answers` 给候选与依据，答案单独成页就用它给的两条 `pdf_arrange` 命令拆；同页/判不出就人工确认页码，或只做'哪几页是答案'的报告" |
 
 ---
 

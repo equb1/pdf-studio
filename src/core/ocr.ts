@@ -68,8 +68,24 @@ function loadCreateCanvas(): CreateCanvas {
   return cachedCreateCanvas
 }
 
-/** Default language data. Shared, 44 MB, never copied — see `cacheMethod` below. */
-const DEFAULT_LANG_PATH = '/Users/Zhuanz/dsh-pdf-maker/assets/tessdata'
+/**
+ * Language data directory: **fallback** only.
+ *
+ * 这个绝对路径指向的是**另一个项目**（dsh-pdf-maker）的资源目录，不是本插件的目录，
+ * 别人机器上必然不存在。所以它只是兜底，优先级是：
+ *   1. 调用方显式传的 `langPath`（profile 配置 `tessdataPath` 会走到这里）；
+ *   2. 环境变量 `DSH_PDF_STUDIO_TESSDATA`；
+ *   3. 这个兜底路径。
+ */
+export const DEFAULT_LANG_PATH = '/Users/Zhuanz/dsh-pdf-maker/assets/tessdata'
+
+/** 解析实际要用的语言数据目录（显式 > 环境变量 > 兜底）。 */
+export function resolveLangPath(explicit?: string): string {
+  if (explicit !== undefined && explicit.trim() !== '') return explicit.trim()
+  const fromEnv = process.env.DSH_PDF_STUDIO_TESSDATA
+  return fromEnv !== undefined && fromEnv.trim() !== '' ? fromEnv.trim() : DEFAULT_LANG_PATH
+}
+
 /** Render scale. 2× is the measured sweet spot for 300-ish dpi exam scans. */
 const DEFAULT_SCALE = 2
 const DEFAULT_LANG = 'chi_sim'
@@ -97,7 +113,10 @@ export interface OcrOptions {
   scale?: number
   /** Tesseract language(s), `+`-joined. Default `'chi_sim'`. */
   lang?: string
-  /** Directory holding `<lang>.traineddata[.gz]`. Default {@link DEFAULT_LANG_PATH}. */
+  /**
+   * Directory holding `<lang>.traineddata[.gz]`.
+   * Default {@link resolveLangPath}：显式值 > `DSH_PDF_STUDIO_TESSDATA` > {@link DEFAULT_LANG_PATH}。
+   */
   langPath?: string
   /**
    * Path to the tesseract core. Defaults to the `tesseract.js-core` package.
@@ -218,19 +237,108 @@ function resolvedCorePath(): string | undefined {
   }
 }
 
-/**
- * Whether the language data for `lang` is gzipped in `langPath`.
- *
- * `cacheMethod: 'none'` makes tesseract read straight from disk, and it
- * appends `.gz` when `gzip` is true. Probing avoids a confusing ENOENT when a
- * caller points `langPath` at a directory holding only the raw `.traineddata`.
- */
-function detectGzip(langPath: string, lang: string): boolean {
-  for (const one of lang.split('+')) {
-    if (existsSync(join(langPath, `${one}.traineddata.gz`))) return true
-    if (existsSync(join(langPath, `${one}.traineddata`))) return false
+/** 语言文件的两种形式。 */
+type LangForm = 'gz' | 'raw'
+
+/** 语言数据检查结果。 */
+export interface OcrLanguageStatus {
+  /** 请求的语言（按 `+` 拆开）。 */
+  requested: string[]
+  /** 在选定模式下**确实可用**的语言（这才是能交给 tesseract 的列表）。 */
+  available: string[]
+  /** 会被丢掉的语言。 */
+  missing: string[]
+  /**
+   * 每个缺失语言缺的是哪种形式，便于排查"为什么退化"。
+   * `has` 是它在目录里实际有的形式（可能两种都有）。
+   */
+  missingForms: Array<{ lang: string; want: LangForm; has: LangForm[] }>
+  /**
+   * 实际要用的模式：`true` = tesseract 会去找 `<lang>.traineddata.gz`。
+   *
+   * 注意这是**全局**开关（tesseract 的 `gzip` 参数只有一个），所以必须按同一个模式
+   * 逐语言检查存在性——早先的实现在混装目录上只看**第一个**语言就定了全局模式，
+   * 结果 `chi_sim` 有 `.gz`、`eng` 只有裸文件时去找 `eng.traineddata.gz`，
+   * worker 抛未捕获异常把宿主进程打崩。
+   */
+  gzip: boolean
+  /** 是否为"混装"（不同语言只有不同形式）。 */
+  mixed: boolean
+  /** 按优先级解析出来的目录（显式 > DSH_PDF_STUDIO_TESSDATA > 兜底）。 */
+  langPath: string
+}
+
+/** `<lang>.traineddata[.gz]` 在 `langPath` 里的存在情况。 */
+function probeLangForm(langPath: string, lang: string): { gz: boolean; raw: boolean } {
+  return {
+    gz: existsSync(join(langPath, `${lang}.traineddata.gz`)),
+    raw: existsSync(join(langPath, `${lang}.traineddata`)),
   }
-  return true // Unprobeable: keep the upstream default and let it error clearly.
+}
+
+/**
+ * 检查请求的 OCR 语言在 `langPath` 里有没有装，并**定下 gzip 模式**。
+ *
+ * 为什么需要它（不是多余的检查）：tesseract.js 在语言文件缺失时**不是**抛一个可以捕获的 rejection，
+ * 而是通过 worker 的 `error` 事件抛出**未捕获异常**——直接把宿主进程打崩。实测两种踩法：
+ *
+ *     # ① 语言完全没装
+ *     Error: ENOENT: no such file or directory, open '…/tessdata/eng.traineddata.gz'
+ *     # ② 混装目录（chi_sim 有 .gz、eng 只有裸文件），全局 gzip 由第一个语言决定
+ *     Error: ENOENT: no such file or directory, open '…/tessdata/eng.traineddata.gz'
+ *         at Worker.<anonymous> (tesseract.js/src/createWorker.js:217:15)
+ *     node:internal/event_target:1118
+ *         process.nextTick(() => { throw err; });
+ *
+ * 连 `try/catch` 都接不住（异常抛在 worker 线程的事件回调里）。所以必须在创建 worker **之前**
+ * 按选定的 gzip 模式**逐语言**核对：不匹配的语言退化为 missing（由调用方写明并降级），
+ * 一个都不剩时给中文错误。
+ *
+ * 模式选择：所有请求语言都有 `.gz` → gzip；否则所有都有裸文件 → 非 gzip；
+ * 都不满足（真混装）→ 取覆盖面更大的那一种（并列时按 tesseract 上游默认选 gzip），
+ * 缺该形式的语言进 `missing`。
+ */
+export function inspectLanguageData(requested: string, langPath: string = resolveLangPath()): OcrLanguageStatus {
+  const dir = resolveLangPath(langPath)
+  const wanted = String(requested ?? '')
+    .split('+')
+    .map(item => item.trim())
+    .filter(item => item !== '')
+  const forms = new Map<string, { gz: boolean; raw: boolean }>(
+    wanted.map(one => [one, probeLangForm(dir, one)]),
+  )
+  const gzCount = wanted.filter(one => forms.get(one)?.gz === true).length
+  const rawCount = wanted.filter(one => forms.get(one)?.raw === true).length
+  const allGz = wanted.length > 0 && gzCount === wanted.length
+  const allRaw = wanted.length > 0 && rawCount === wanted.length
+  const gzip = allGz ? true : allRaw ? false : gzCount >= rawCount
+  const want: LangForm = gzip ? 'gz' : 'raw'
+  const available = wanted.filter(one => forms.get(one)?.[want] === true)
+  const missing = wanted.filter(one => !available.includes(one))
+  const missingForms = missing.map(one => {
+    const form = forms.get(one) ?? { gz: false, raw: false }
+    const has: LangForm[] = []
+    if (form.gz) has.push('gz')
+    if (form.raw) has.push('raw')
+    return { lang: one, want, has }
+  })
+  return {
+    requested: wanted,
+    available,
+    missing,
+    missingForms,
+    gzip,
+    mixed: !allGz && !allRaw && wanted.length > 1,
+    langPath: dir,
+  }
+}
+
+/** 中文描述某个语言为什么不可用（给用户看的排查信息）。 */
+export function describeMissingLanguage(entry: { lang: string; want: LangForm; has: LangForm[] }): string {
+  if (entry.has.length === 0) return `${entry.lang} 未安装`
+  if (entry.want === 'gz' && entry.has.includes('raw')) return `${entry.lang} 只有裸文件 .traineddata、当前需要 .gz`
+  if (entry.want === 'raw' && entry.has.includes('gz')) return `${entry.lang} 只有 .gz、当前需要裸文件 .traineddata`
+  return `${entry.lang} 的 language data 形式不匹配（需要 ${entry.want}）`
 }
 
 /* ------------------------------------------------------------------ *
@@ -317,6 +425,8 @@ interface ResolvedOptions {
   scale: number
   lang: string
   langPath: string
+  /** tesseract 的 `gzip` 开关：由 {@link inspectLanguageData} 按目录内容定下，不在这里现猜。 */
+  gzip: boolean
   corePath?: string
   minConfidence: number
   onPage?: (result: OcrPageResult) => void
@@ -326,10 +436,17 @@ interface ResolvedOptions {
 
 function resolveOptions(options: OcrOptions): ResolvedOptions {
   const scale = options.scale ?? DEFAULT_SCALE
+  const langPath = resolveLangPath(options.langPath)
+  const requestedLang = options.lang ?? DEFAULT_LANG
+  // 兜底一层：即使调用方没做预检，这里也按选定模式逐语言降级，绝不把目录里不存在的
+  // `<lang>.traineddata[.gz]` 交给 tesseract（那样是 worker 未捕获异常 → 打崩进程）。
+  const status = inspectLanguageData(requestedLang, langPath)
+  const lang = status.available.length > 0 ? status.available.join('+') : requestedLang
   const resolved: ResolvedOptions = {
     scale: scale > 0 ? scale : DEFAULT_SCALE,
-    lang: options.lang ?? DEFAULT_LANG,
-    langPath: options.langPath ?? DEFAULT_LANG_PATH,
+    lang,
+    langPath,
+    gzip: status.gzip,
     minConfidence: options.minConfidence ?? 0,
     onPage: options.onPage,
     doc: options.doc,
@@ -359,7 +476,9 @@ async function createTesseractWorker(options: ResolvedOptions): Promise<Tesserac
   const workerOptions: Record<string, unknown> = {
     workerPath: nodeWorkerPath(),
     langPath: options.langPath,
-    gzip: detectGzip(options.langPath, options.lang),
+    // 用预检定下的模式（`options.gzip`），绝不在这里按"第一个语言"现猜：
+    // 混装目录上现猜会让 tesseract 去找不存在的 `<lang>.traineddata.gz` → worker 未捕获异常 → 进程崩。
+    gzip: options.gzip,
     cacheMethod: 'none',
   }
   if (options.corePath !== undefined) workerOptions.corePath = options.corePath

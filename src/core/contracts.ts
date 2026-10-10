@@ -166,8 +166,26 @@ export interface ExtractOptions {
   scale?: number
   /** Language(s) for OCR. Defaults to `chi_sim+eng`. */
   lang?: string
+  /**
+   * OCR 语言数据目录（`<lang>.traineddata[.gz]`）。
+   * 省略时由 `src/core/ocr.ts` 的 `resolveLangPath()` 决定（环境变量 > 兜底路径）。
+   */
+  langPath?: string
   /** Only OCR pages whose text layer is not trustworthy. Default true. */
   skipTextLayerPages?: boolean
+  /**
+   * 是否对图片页做 OCR。默认 true。
+   *
+   * `false` 时图片页**不进入** `content`（调用方按 `triage` 的 kind 自己标"未做 OCR"），
+   * 这样"只看文字层、不碰 OCR"的只读工具不必为一个开关付出整档 OCR 的代价。
+   */
+  ocr?: boolean
+  /**
+   * 只读取这些页（1 基）。省略则整档。
+   *
+   * 用于"只判定第 6-7 页"这类调用：范围之外的页既不做 OCR 也不读文字层。
+   */
+  onlyPages?: number[]
   /** Progress sink, called with (done, total) as pages complete. */
   onProgress?: (done: number, total: number) => void
 }

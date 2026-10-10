@@ -225,6 +225,13 @@ export function classifyGate(input: GateInput): GateDecision {
     expensive = true
     reasons.push(`整档 OCR：${pages} 页超过 ${OCR_WHOLE_DOC_PAGES} 页阈值`)
   }
+  // 定位答案页同样是"整档逐页 OCR"：阈值与口径和 pdf_extract_text 完全一致。
+  // 注意它没有 plan/confirm/force 令牌（只读工具），策略 always 下会得到一张确认单，
+  // 提示用户把 pages 拆成 ≤ 阈值 的几段再调用。
+  if (input.tool === 'pdf_find_answers' && input.wholeDocument === true && pages > OCR_WHOLE_DOC_PAGES) {
+    expensive = true
+    reasons.push(`整档 OCR：${pages} 页超过 ${OCR_WHOLE_DOC_PAGES} 页阈值`)
+  }
   if (input.tool === 'pdf_make_searchable' && pages > SEARCHABLE_PAGES) {
     expensive = true
     reasons.push(`可搜索化：${pages} 页超过 ${SEARCHABLE_PAGES} 页阈值`)
@@ -289,6 +296,7 @@ function titleFor(tool: string, action: string): string {
   }
   if (tool === 'pdf_inspect') return action === 'analyze' ? '深度分析（含 OCR）' : '检查文档'
   if (tool === 'pdf_extract_text') return '提取文字'
+  if (tool === 'pdf_find_answers') return '定位答案页'
   if (tool === 'pdf_preview') return '渲染预览'
   if (tool === 'pdf_split') return '拆分 2-up 页面'
   if (tool === 'pdf_crop') return '裁剪页面'

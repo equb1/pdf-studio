@@ -34,6 +34,9 @@
 | 浮层「待确认操作」卡片、3 秒轮询、`window.__dshPdfStudioStop()`（浮层可选；确认主路径是纯文本确认单） | `public/app.js` |
 | 页级装配的几何与判定：页面框继承（`/MediaBox`/`/CropBox`/`/Rotate`/`/UserUnit` 沿页树向上找）、可见区域 = CropBox ∩ MediaBox、2-up 判定（`/Rotate` 为 0 且长宽比 ≥ 1.25，与纸张尺寸无关）、拆分的页面框改写 + 内容流平移（不栅格化）、`keep` 只留一半、中缝检测（内容框间隔 ≥ 8pt、偏离中线 > 15% 回退、`MIN_CONTENT_LINE_RATIO`）、裁剪只裁不缩与 trim 的 uniform 并集、页序解析、合并的来源回报 | `src/core/page-assembly.ts` |
 | `pdf_split` / `pdf_crop` / `pdf_arrange` / `pdf_merge` 的参数、默认值与 `authorize({...})` 调用点（四个工具一律 destructive，见 `PAGE_ASSEMBLY_TOOLS`） | `src/host/tools.ts`、`src/core/confirmation.ts` |
+| 答案页候选的判定：权重（标题词 +5 / 速查表 +4 / 解答句 +2 / 题干每类 −2）、**先算强信号再看"文本过少"**（命中标题词/速查表不受字数门槛限制；没有强信号时才用 `< 20` 有效字符判 unknown，依据里回显识别文字便于核对计数）、速查表要求**连续递增 +1 且相邻间隔 ≤ 24 字符**、字母认 **A–F**（选项列表 `A,5 B,4 C 3 D,2` 不算速查表）、位置先验只在总分绝对值 ≤ 1 且末 25% 页时 +0.5 且**只进「位置推断（仅供参考）」一节——不进候选区间、不进 order**、`mixed`（答案侧 + ≥2 类题干）与"不做内容级分离"的边界、区间合并取最弱页置信度、拆分建议的 order 压缩 | `src/core/answer-pages.ts` |
+| `pdf_find_answers` 的参数与默认值（`pages` / `ocr` 默认 true / `lang` 默认 `chi_sim+eng`）、**只读工具不接 `CONFIRM_PARAMS`**、整档 OCR > 20 页走 `expensive`（与 `pdf_extract_text` 同一阈值口径）、OCR 语言数据按**选定 gzip 模式逐语言**核对后显式退化 | `src/host/tools.ts`、`src/core/confirmation.ts`、`src/core/ocr.ts` |
+| OCR 语言数据目录的解析优先级（插件配置 `tessdataPath` > `DSH_PDF_STUDIO_TESSDATA` > 兜底绝对路径）、`inspectLanguageData` 的 gzip 模式选择与逐语言 `missingForms`、混装目录的降级（tesseract 缺语言文件时抛的是 worker 未捕获异常，会打崩进程） | `src/core/ocr.ts`、`src/index.ts` |
 
 改了上面任何一处，请同步 `README.md` 的「执行前确认」与「怎么验证」两节，以及 `docs/PROMPTING.md`
 的「意图 → 工具 → 关键参数」表与模板。
@@ -51,6 +54,7 @@ npm run test:confirm-ui     # 浮层卡片（浮层可选开启）
 npm run test:plugin-wiring  # 工具注册 + 注入（默认关闭 / surface:true）+ 策略透传
 npm run test:line-redraw    # 整行重绘：几何换算 / 抹除 / 不重叠 / 确认令牌 / 错误路径
 npm run test:page-assembly  # 页级装配：拆分 / 裁剪 / 重排 / 合并（含真实 canvas 回拼比对）
+npm run test:answer-pages   # 定位答案页：打分权重 / 零误报 / 位置先验只做 tiebreak / mixed / OCR 开关
 npm run test:commit-tools   # 提交工具：自动草稿推断优先级 / 夹具不编标题 / R1+R2（含裸 --staged）+ R3
 ```
 

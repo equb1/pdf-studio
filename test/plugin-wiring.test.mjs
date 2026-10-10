@@ -126,7 +126,7 @@ const sample = join(workspace, 'wiring.pdf')
     on: harness.ctx.on,
     effect: harness.ctx.effect,
   })
-  check('12 个工具全部注册', registered.length === 12, registered.map(item => item.name).join(', '))
+  check('13 个工具全部注册', registered.length === 13, registered.map(item => item.name).join(', '))
   check('写盘类工具带 confirm 参数',
     ['pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_make_searchable',
       'pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge'].every(name =>

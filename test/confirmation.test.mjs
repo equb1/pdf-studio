@@ -138,7 +138,7 @@ const GATED_TOOLS = [
 ]
 for (const [policy, tools] of Object.entries(toolSets)) {
   const names = tools.map(tool => tool.name)
-  check(`工具集 ${policy} 暴露 12 个工具`, tools.length === 12, names.join(', '))
+  check(`工具集 ${policy} 暴露 13 个工具`, tools.length === 13, names.join(', '))
   // 会写盘或代价高的 11 个工具都必须声明 plan/confirm/force：这是"写盘前过 authorize"的入口。
   // pdf_preview 是纯只读渲染，没有闸门参数（也没有任何写盘路径），所以不在这一组里。
   for (const name of GATED_TOOLS) {
@@ -150,6 +150,13 @@ for (const [policy, tools] of Object.entries(toolSets)) {
   check(`工具集 ${policy}：只读预览不声明闸门参数（没有写盘路径）`,
     ['plan', 'confirm', 'force'].every(key =>
       !Object.keys(tools.find(tool => tool.name === 'pdf_preview').parameters.properties ?? {}).includes(key)))
+  // 定位答案页同样只读：它**不接 CONFIRM_PARAMS**（不写盘、不删改），
+  // 只读结果里的"候选 + 依据 + 置信度"由用户自己判断。整档 OCR 的成本门控仍会走。
+  check(`工具集 ${policy}：定位答案页不声明闸门参数（只读，不写盘）`,
+    ['plan', 'confirm', 'force'].every(key =>
+      !Object.keys(tools.find(tool => tool.name === 'pdf_find_answers').parameters.properties ?? {}).includes(key)))
+  check(`工具集 ${policy}：定位答案页不在"必须带令牌"的清单里`,
+    !GATED_TOOLS.includes('pdf_find_answers'))
 }
 
 /** 执行一个工具并取出它渲染后的文本（`output.render` 必须返回数组）。 */

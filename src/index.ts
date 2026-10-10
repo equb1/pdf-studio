@@ -40,7 +40,7 @@ import { DEFAULT_CONFIRMATION_POLICY, type ConfirmationPolicy } from './core/con
 import { buildToolDefinitions, type AttachmentSink, type ToolRegistry } from './host/tools.ts'
 
 /** Tool names, listed once so the boot log can name them. */
-const TOOL_NAMES = ['pdf_inspect', 'pdf_extract_text', 'pdf_make_searchable', 'pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_preview', 'pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge']
+const TOOL_NAMES = ['pdf_inspect', 'pdf_extract_text', 'pdf_find_answers', 'pdf_make_searchable', 'pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_preview', 'pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge']
 
 export { PDF_API_PREFIX, PDF_SURFACE_SCRIPT } from './host/routes.ts'
 export { analyzeDocument, exportSearchable } from './host/engine.ts'
@@ -74,6 +74,13 @@ export interface PdfStudioConfig {
    * 确认单以纯文本返回，用户对助手说「确认执行」即可。
    */
   surface?: boolean
+  /**
+   * OCR 语言数据目录（放 `<lang>.traineddata[.gz]`）。
+   *
+   * 不配的话按 `DSH_PDF_STUDIO_TESSDATA` 环境变量 → 这个插件外的兜底路径来找，
+   * 所以"换台机器就没有语言数据"这件事可以在这里一次配好。
+   */
+  tessdataPath?: string
 }
 
 /** 计算注入用的基线地址：能拿到端口就用绝对地址（桌面端必需），否则退回相对路径。 */
@@ -187,6 +194,7 @@ export default {
           for (const definition of buildToolDefinitions({
             workspaceRoot,
             confirmation,
+            ...(config.tessdataPath === undefined ? {} : { tessdataPath: config.tessdataPath }),
             ...(attachments === undefined ? {} : { attachments }),
           })) {
             registry.register(definition)

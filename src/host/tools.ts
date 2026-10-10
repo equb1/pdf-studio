@@ -34,6 +34,19 @@ import { basename, dirname, extname, join, resolve } from 'node:path'
 import { PDFDocument } from 'pdf-lib'
 import { analyzeDocument, applyTextEdits, exportSearchable, inspectDocument, protectPdf, readEditableDocument, reportWatermarks, stampWatermark, stripWatermarks, lineSummary } from './engine.ts'
 import { redrawLineInPdfBytes } from '../core/line-redraw.ts'
+import { inspectLanguageData, describeMissingLanguage } from '../core/ocr.ts'
+import {
+  formatPages,
+  formatRange,
+  groupAnswerRanges,
+  scoreAnswerPage,
+  suggestArrangement,
+  weakerConfidence,
+  type AnswerConfidence,
+  type AnswerVerdict,
+  type ArrangementSplit,
+  type ScoredPage,
+} from '../core/answer-pages.ts'
 import {
   axisLabel,
   classifyTwoUp,
@@ -307,6 +320,13 @@ export interface ToolOptions {
    * 由 profile 配置或 `DSH_PDF_STUDIO_CONFIRM` 决定。
    */
   confirmation?: ConfirmationPolicy
+  /**
+   * OCR 语言数据目录（`<lang>.traineddata[.gz]`）。
+   *
+   * 不传时由 `src/core/ocr.ts` 的 `resolveLangPath()` 决定：
+   * `DSH_PDF_STUDIO_TESSDATA` 环境变量 > 那个跨项目硬编码路径兜底。
+   */
+  tessdataPath?: string
 }
 
 /** Read a required string argument, or throw with a usable message. */
@@ -595,6 +615,236 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       }
       if (out.length === 0) out.push(wanted === undefined ? '没有提取到内容。' : `第 ${wanted} 页不存在。`)
       return { text: out.join('\n') }
+    },
+  }
+
+  // ── find answers（定位答案页，只读）──────────────────────────────────────
+  //
+  // 只读工具，**不接 CONFIRM_PARAMS**：它不写盘、不删改，结论是"候选 + 依据 + 置信度"，
+  // 让用户确认后再用 pdf_arrange 去拆。唯一的例外是整档 OCR 的成本门控：策略为 `always`
+  // 且页数超过阈值时会返回确认单（本工具没有令牌参数，提示用户把 pages 拆小再调用）。
+  const findAnswers: ToolDefinition = {
+    name: 'pdf_find_answers',
+    description:
+      '定位 PDF 里的答案页候选：给候选页范围、中文依据与置信度（只读，不修改文件，也不擅自拆分）。'
+      + '判定依据是页首答案标题词（答案/参考答案/评分标准/Answer Key）、答案速查表（1 C 2 A…）、'
+      + '解答句特征与题干特征；答案与题目同页时只如实报告"无法按页分离"，不硬凑。'
+      + '扫描页默认走 OCR；ocr=false 时只读文字层，图片页标为"未做 OCR"。',
+    parameters: {
+      path: { type: 'string', required: true, description: 'PDF 路径。' },
+      pages: { type: 'string', description: '要判定的页码范围，例如 "5-7"；省略则判定全部页。' },
+      ocr: {
+        type: 'boolean',
+        description: '是否对图片页做 OCR。默认 true；false 时图片页标为 unknown 并说明未做 OCR。',
+      },
+      lang: { type: 'string', description: 'OCR 语言，默认 chi_sim+eng。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({ card: 'generic', title: `定位答案页 ${basename(String(args.path ?? ''))}`, kind: 'read' }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const pagesSpec = optionalString(args, 'pages')
+      const ocrEnabled = args.ocr === undefined ? true : args.ocr === true
+      const lang = optionalString(args, 'lang') ?? 'chi_sim+eng'
+      // 语言数据先查一次：tesseract 缺语言文件时抛的是**未捕获的 worker 错误**（直接崩进程），
+      // 不是可捕获的 rejection。缺语言就退化到可用子集并在结论里写明；一个都没有就中文报错。
+      let effectiveLang = lang
+      let langNote: string | undefined
+      if (ocrEnabled) {
+        // langPath 优先级：profile 的 tessdataPath > DSH_PDF_STUDIO_TESSDATA > 兜底路径。
+        const status = inspectLanguageData(lang, options.tessdataPath)
+        if (status.available.length === 0) {
+          throw new Error(
+            `OCR 语言数据缺失：${status.langPath} 里找不到 ${status.missing.join('、')}。`
+            + '请改用已安装的语言（例如 lang=chi_sim），或把对应的 <语言>.traineddata[.gz] 放进该目录'
+            + '（也可以用 DSH_PDF_STUDIO_TESSDATA 环境变量或 profile 的 tessdataPath 指向别处）。',
+          )
+        }
+        if (status.missing.length > 0) {
+          effectiveLang = status.available.join('+')
+          langNote = `请求 lang=${lang}，但语言数据目录（${status.langPath}）里 `
+            + `${status.missingForms.map(describeMissingLanguage).join('；')}，已退化为 ${effectiveLang}`
+        }
+      }
+
+      // 页范围要页数来解析；"整档"判定也要页数——与 pdf_extract_text 同一口径：
+      // 只有"整档且要 OCR"才为了一次确认额外探一遍页数。
+      const info = pagesSpec !== undefined || ocrEnabled ? await inspectDocument(source) : undefined
+      const pageCount = info?.pages ?? 0
+      if (info !== undefined && !info.readable) {
+        // 加密且没给密码：读不了内容，判定无从谈起——如实说明，不要抛一个底层解析错误。
+        return {
+          text: `${basename(source)} 已加密，且没有提供密码，无法读取内容做答案页判定。`
+            + '请先用 pdf_protect action=decrypt 解除保护（或提供密码）后重试。',
+        }
+      }
+      if (pagesSpec !== undefined && (info === undefined || pageCount < 1)) {
+        throw new Error('这个 PDF 的页数不可读，无法解析 pages。')
+      }
+      let wanted: number[] | undefined
+      if (pagesSpec !== undefined) {
+        wanted = parsePageSelection(pagesSpec, pageCount).map(index => index + 1).sort((a, b) => a - b)
+      }
+      // "整档"= 没给 pages，或给的页范围覆盖了全部页（例如 7 页文档的 "1-7"）。
+      const coversAll = wanted !== undefined && pageCount > 0 && wanted.length === pageCount
+      const wholeDocument = ocrEnabled && (pagesSpec === undefined || coversAll)
+
+      const gate = authorize({
+        tool: 'pdf_find_answers',
+        action: 'find-answers',
+        parameters: { pages: pagesSpec ?? '全部', ocr: ocrEnabled, lang },
+        inputs: [source],
+        ...(info === undefined ? {} : { pageCount }),
+        ...(wholeDocument ? { wholeDocument: true } : {}),
+        hints: [
+          '只想看某几页就说 pages=6-7',
+          '没有文字层的扫描页需要 ocr=true（默认）',
+          '本工具只给候选，确认后再用 pdf_arrange 拆分',
+        ],
+        effects: [
+          '只读，不修改任何文件',
+          ...(wholeDocument ? [`将对全部 ${pageCount} 页做文字读取（图片页走 OCR）`] : []),
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') {
+        return {
+          text: `${renderPlanPrompt(gate.plan)}\n\n`
+            + '注意：这是只读工具，没有 plan/confirm/force 令牌参数。要跳过这次确认，请把 pages 拆成'
+            + '不超过阈值的几段分别调用（例如 pages=1-20、pages=21-40），或把确认策略改回 destructive。',
+        }
+      }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      const started = Date.now()
+      const analysis = await analyzeDocument(source, {
+        lang: effectiveLang,
+        ...(options.tessdataPath === undefined ? {} : { langPath: options.tessdataPath }),
+        ocr: ocrEnabled,
+        ...(wanted === undefined ? {} : { onlyPages: wanted }),
+      })
+      const elapsedMs = Date.now() - started
+      const total = analysis.pages
+      const range = wanted ?? Array.from({ length: total }, (_, index) => index + 1)
+      const contentByPage = new Map(analysis.content.map(page => [page.page, page]))
+
+      const scored: ScoredPage[] = range.map(pageNumber => {
+        const kind = analysis.triage[pageNumber - 1]?.kind ?? 'empty'
+        const content = contentByPage.get(pageNumber)
+        const text = content === undefined ? '' : content.lines.map(line => line.text).join('\n')
+        // 图片页 + ocr=false：没有内容不是"页面空白"，而是"我们没识别"。
+        const ocrSkipped = !ocrEnabled && kind === 'image' && content === undefined
+        return {
+          page: pageNumber,
+          ...scoreAnswerPage({ text, pageNumber, pageCount: total, kind, ocrSkipped }),
+        }
+      })
+
+      const ranges = groupAnswerRanges(scored)
+      const coversWhole = wanted === undefined || wanted.length === total
+      const suggestion = coversWhole
+        ? suggestArrangement(total, ranges)
+        : {
+          separable: false,
+          note: `只判定了第 ${range.join('、')} 页（文档共 ${total} 页，未覆盖全文），不给出整档拆分建议；`
+            + '要看整档拆分请省略 pages。',
+          splits: [] as ArrangementSplit[],
+        }
+
+      const verdictLabel: Record<AnswerVerdict, string> = {
+        answer: '答案',
+        question: '试卷',
+        mixed: '答案与题目同页',
+        unknown: '无法判定',
+      }
+      const confidenceLabel: Record<AnswerConfidence, string> = { high: '高', medium: '中', low: '低' }
+
+      const lines: string[] = []
+      // 1. 一行结论（不硬凑：没有候选就明说"未找到答案页"）。
+      //    候选只用 medium/high：纯位置先验的页（low）不算候选，只说"位置可疑"。
+      if (ranges.answerRanges.length > 0) {
+        const where = ranges.answerRanges.map(range => formatRange(range)).join('、')
+        const weakest = ranges.answerRanges
+          .map(range => range.confidence)
+          .reduce((a, b) => weakerConfidence(a, b), 'high' as AnswerConfidence)
+        lines.push(`答案页候选：${where}（置信度 ${confidenceLabel[weakest]}）`)
+      } else {
+        // 没有 medium/high 候选时，结论行只给一条最关键的原因（其余细节在下面的逐页表格与注意行里）：
+        // 同页 > 位置可疑 > 无法判定。位置可疑的说法与 suggestArrangement 的中文提示保持一致。
+        const reason = ranges.mixedPages.length > 0
+          ? `${formatPages(ranges.mixedPages)}答案与题目同页`
+          : ranges.positionOnlyPages.length > 0
+            ? `仅${formatPages(ranges.positionOnlyPages)}位置可疑，无文本证据`
+            : ranges.unknownPages.length > 0
+              ? `${formatPages(ranges.unknownPages)}无法判定`
+              : ''
+        lines.push(`未找到答案页${reason === '' ? '' : `（${reason}）`}`)
+      }
+      lines.push(`判定了 ${range.length} 页（文档共 ${total} 页，ocr=${ocrEnabled ? 'true' : 'false'}，lang=${effectiveLang}）`
+        + `，用时 ${(elapsedMs / 1000).toFixed(1)} 秒`)
+      if (langNote !== undefined) lines.push(`注意：${langNote}`)
+
+      // 2. 逐页表格
+      lines.push('')
+      lines.push('逐页判定：')
+      for (const page of scored) {
+        const oneLine = page.evidence.join('；').replace(/\s+/g, ' ').trim()
+        const clipped = oneLine.length > 120 ? `${oneLine.slice(0, 120)}…` : oneLine
+        lines.push(`第 ${page.page} 页｜${verdictLabel[page.verdict]}｜${page.score}｜${clipped}`)
+      }
+
+      // 3. 位置推断单独列一节：它不是证据，仅供参考，绝不参与拆分
+      if (ranges.positionOnlyPages.length > 0) {
+        lines.push('')
+        lines.push('位置推断（仅供参考，不建议据此拆分）：')
+        for (const page of scored.filter(item => item.positionOnly === true)) {
+          lines.push(
+            `第 ${page.page} 页｜分数 ${page.score}｜位于文档末 25%，无文本证据`,
+          )
+        }
+      }
+
+      // 4. 可拆分时给两条可直接复制的 pdf_arrange 调用（order 只由 medium/high 页决定）
+      lines.push('')
+      if (suggestion.separable && suggestion.splits.length === 2) {
+        const stem = basename(source, extname(source))
+        const dir = dirname(source)
+        const suffixOf = (role: ArrangementSplit['role']): string => (role === 'answers' ? '-答案' : '-试卷')
+        lines.push('拆分建议（先确认候选对不对，再执行；这是新文件，不动源文件）：')
+        suggestion.splits.forEach((split, index) => {
+          lines.push(
+            `  ${index + 1}. pdf_arrange path="${source}" order="${split.order}" `
+            + `output="${join(dir, `${stem}${suffixOf(split.role)}.pdf`)}"   # ${split.label}`,
+          )
+        })
+        lines.push(`  （${suggestion.note}）`)
+      } else {
+        lines.push(`不给出拆分建议：${suggestion.note}`)
+      }
+
+      // 5. mixed / unknown / 位置可疑 如实列出
+      if (ranges.mixedPages.length > 0) {
+        lines.push(
+          `注意：${formatPages(ranges.mixedPages)}答案与题目同页，无法按页分离——本工具不做内容级拆分，`
+          + '请人工确认后再决定（例如只取题目的那部分页码）。',
+        )
+      }
+      if (ranges.unknownPages.length > 0) {
+        lines.push(`注意：${formatPages(ranges.unknownPages)}无法判定（文本过少或未做 OCR），没有硬凑成答案页。`)
+      }
+      if (ranges.positionOnlyPages.length > 0) {
+        lines.push(
+          `注意：${formatPages(ranges.positionOnlyPages)}只是"位置可疑"（位于文档末 25%），`
+          + '**没有文本证据**，未计入候选与拆分建议；不要仅凭位置就拆。',
+        )
+      }
+      if (!ocrEnabled) {
+        lines.push('注意：ocr=false，图片页只标"未做 OCR"，没有做任何识别；要判定请加 ocr=true。')
+      } else if (analysis.triage.some(t => t.kind === 'image' && range.includes(t.page))) {
+        lines.push('注意：图片页的文字来自 OCR，可能有错字/多余空格；判定依据已按容错正则处理（允许字间空格）。')
+      }
+      lines.push('注意：以上是**候选**，不是结论；本工具只读，未修改、未拆分任何文件。')
+      return { text: lines.join('\n') }
     },
   }
 
@@ -1785,7 +2035,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
   // Compile to the registry-ready shape. Argument validation is wrapped around
   // `execute` here, so a malformed call fails with a readable message instead of
   // a TypeError from deep inside a tool body.
-  return [inspect, extract, searchable, edit, replaceLine, watermark, protect, preview, split, crop, arrange, merge].map((definition) => {
+  return [inspect, extract, findAnswers, searchable, edit, replaceLine, watermark, protect, preview, split, crop, arrange, merge].map((definition) => {
     const parameters = compileParameters(definition.parameters)
     const execute = definition.execute
     return {

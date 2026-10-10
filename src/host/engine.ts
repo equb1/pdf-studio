@@ -86,7 +86,11 @@ export async function analyzeDocument(
   try {
     const triage = await triageDocument(doc)
     const kinds = triage.map(t => t.kind)
-    const scanned = triage.filter(t => t.kind === 'image').map(t => t.page)
+    // `onlyPages` 限定范围：范围之外既不做 OCR 也不读文字层（例如"只判定第 6-7 页"）。
+    const inScope = options.onlyPages === undefined
+      ? () => true
+      : (page: number) => (options.onlyPages ?? []).includes(page)
+    const scanned = triage.filter(t => t.kind === 'image' && inScope(t.page)).map(t => t.page)
     if (scanned.length > 0) {
       notes.push(`${scanned.length} 页需要 OCR：${scanned.join(', ')}`)
     }
@@ -96,11 +100,14 @@ export async function analyzeDocument(
     // something useful while a long OCR run is still going.
     for (const t of triage) {
       if (t.kind === 'image' || t.kind === 'empty') continue
+      if (!inScope(t.page)) continue
       const page = await extractPageContent(doc, t.page)
       content.push({ ...page, kind: t.kind, width: t.width, height: t.height })
     }
 
-    if (scanned.length > 0 && options.skipTextLayerPages !== false) {
+    // `ocr: false` 表示"只读文字层"：图片页被跳过，由调用方按 triage 的 kind 说明"未做 OCR"，
+    // 而不是在这里默默换一条更便宜的路（那会让调用方以为页面没有内容）。
+    if (scanned.length > 0 && options.ocr !== false && options.skipTextLayerPages !== false) {
       // The document is already open and borrowed here, so it is handed to the
       // session rather than reopened: one parse, one worker, and `dispose()`
       // below must not release a document this function still owns.
