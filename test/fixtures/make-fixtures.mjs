@@ -26,6 +26,8 @@
  * | `no-resources.pdf` | two pages: one with no `/Resources` anywhere, one whose `/Resources` has only a `ProcSet` |
  * | `resources-missing.pdf` | the first shape alone, for a precise failure diagnosis |
  * | `resources-no-xobject.pdf` | the second shape alone, for a precise failure diagnosis |
+ * | `adobe-watermark.pdf` | Acrobat shape: `/PieceInfo /ADBE_CompoundType /Private /Watermark` + `/Artifact` wrapper, plus a non-watermark control XObject |
+ * | `artifact-indirect.pdf` | the same artifact wrapper with the properties dictionary given as an indirect reference (`/Artifact 12 0 R BDC`) |
  * | `bulky.pdf` | several pages of large, barely-compressible content, for duplication/bloat checks |
  * | `watermark-image.png` | a hand-encoded PNG, so the image watermark is testable without a rasteriser |
  *
@@ -217,6 +219,100 @@ async function resourcesNoXObject() {
   return doc.save()
 }
 
+/** A Form XObject raw stream with an explicit dictionary. */
+function formXObject(doc, dict, body) {
+  const stream = PDFRawStream.of(doc.context.obj(dict), deflateSync(Buffer.from(body, 'latin1')))
+  stream.dict.set(PDFName.of('Filter'), PDFName.of('FlateDecode'))
+  return doc.context.register(stream)
+}
+
+/**
+ * 10/11. Acrobat-style watermark fixtures.
+ *
+ * These reproduce the shape real Adobe output uses, which the detector used to
+ * miss entirely:
+ *
+ *   - the mark is a Form XObject invoked by ONE `Do`;
+ *   - the page wraps that `Do` in `/Artifact << /Subtype /Watermark >> BDC … EMC`;
+ *   - the XObject's dictionary carries
+ *     `/PieceInfo << /ADBE_CompoundType << /Private /Watermark >> >>`;
+ *   - its body is a single upright red `Tj` under a constant-alpha `gs` — one
+ *     drawing operator, no paths, no rotation. Every older heuristic refuses it.
+ *
+ * `indirect: true` writes the artifact properties dictionary as an indirect
+ * reference (`/Artifact 12 0 R BDC`), so that resolution path is exercised too.
+ * The same document also holds a **control** Form XObject — a grey rectangle
+ * plus one line of black text, with no `/PieceInfo` and no constant alpha — which
+ * must never be reported as a high-confidence candidate.
+ */
+async function adobeWatermark({ indirect = false, pieceInfo = true } = {}) {
+  const doc = await PDFDocument.create({ updateMetadata: false })
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+
+  const markRef = formXObject(doc, {
+    Type: 'XObject',
+    Subtype: 'Form',
+    FormType: 1,
+    BBox: [0, 0, 260, 48],
+    Resources: {
+      Font: { F0: font.ref },
+      ExtGState: { GS0: {}, GS1: { ca: 0.5, CA: 0.5 } },
+    },
+    ...(pieceInfo ? { PieceInfo: { ADBE_CompoundType: { Private: 'Watermark' } } } : {}),
+  }, [
+    '/GS0 gs',
+    'BT',
+    '1 0 0 rg 0 Tc 0 Tw 100 Tz 0 Tr /F0 16 Tf 0 3.392 Td',
+    '(Adobe Watermark) Tj',
+    'ET',
+    '',
+  ].join('\n'))
+
+  const controlRef = formXObject(doc, {
+    Type: 'XObject',
+    Subtype: 'Form',
+    FormType: 1,
+    BBox: [0, 0, 200, 60],
+    Resources: { Font: { F0: font.ref } },
+  }, [
+    '0.5 0.5 0.5 rg 0 0 200 60 re f',
+    'BT 0 0 0 rg /F0 12 Tf 10 25 Td (Figure control) Tj ET',
+    '',
+  ].join('\n'))
+
+  const page = doc.addPage([A4.width, A4.height])
+  const artifactLine = indirect
+    // `/Artifact 12 0 R BDC`: the properties are a reference, not an inline dict.
+    ? `/Artifact ${doc.context.register(doc.context.obj({ Subtype: 'Watermark', Type: 'Pagination' }))} BDC`
+    : '/Artifact<</Subtype/Watermark/Type/Pagination>> BDC'
+  page.node.set(PDFName.of('Resources'), doc.context.obj({
+    Font: { F0: font.ref },
+    XObject: { Fm0: markRef, Fig1: controlRef },
+    ExtGState: { GS0: {}, GS1: { ca: 0.5, CA: 0.5 } },
+  }))
+  setContents(doc, page, [
+    'BT 0.2 0.2 0.2 rg /F0 12 Tf 60 780 Td (Adobe watermark fixture body) Tj ET',
+    artifactLine,
+    '/GS1 gs 0 g 0 G q 1 0 0 1 120 400 cm /Fm0 Do Q',
+    'EMC',
+    'q 1 0 0 1 60 120 cm /Fig1 Do Q',
+    '',
+  ].join('\n'))
+  return doc.save()
+}
+
+/** 10. The Adobe shape: `/PieceInfo` identity plus an inline `/Artifact` wrapper. */
+function adobePieceInfo() {
+  return adobeWatermark({ indirect: false })
+}
+
+/** 11. The generic shape alone: `/Artifact` properties given as an indirect ref. */
+function artifactIndirect() {
+  // Deliberately NO `/PieceInfo`: this fixture exists to prove the artifact
+  // wrapper is detected on its own, without Acrobat's identity tag.
+  return adobeWatermark({ indirect: true, pieceInfo: false })
+}
+
 /**
  * 9. Several pages of large, barely-compressible content. The payload here is
  * ~55KB per page, so any inline-and-orphan behaviour shows up as ~55KB of growth
@@ -255,6 +351,8 @@ export const FIXTURES = {
   'no-resources.pdf': noResources,
   'resources-missing.pdf': resourcesMissing,
   'resources-no-xobject.pdf': resourcesNoXObject,
+  'adobe-watermark.pdf': adobePieceInfo,
+  'artifact-indirect.pdf': artifactIndirect,
   'bulky.pdf': bulky,
   'watermark-image.png': async () => watermarkImage(),
 }

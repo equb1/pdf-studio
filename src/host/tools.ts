@@ -31,8 +31,31 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
+import { PDFDocument } from 'pdf-lib'
 import { analyzeDocument, applyTextEdits, exportSearchable, inspectDocument, protectPdf, readEditableDocument, reportWatermarks, stampWatermark, stripWatermarks, lineSummary } from './engine.ts'
 import { redrawLineInPdfBytes } from '../core/line-redraw.ts'
+import {
+  axisLabel,
+  classifyTwoUp,
+  cropPages,
+  detectGutter,
+  isA4Half,
+  keepLabel,
+  keepMatchesAxis,
+  keepOptionsFor,
+  loadPdfDocument,
+  mergeDocuments,
+  parsePageOrder,
+  parsePageSelection,
+  readPageBoxes,
+  rotatePages,
+  splitPageIntoHalves,
+  splitPageKeepingHalf,
+  type CropBoxInput,
+  type GutterDetection,
+  type SplitKeep,
+  type TwoUpAxis,
+} from '../core/page-assembly.ts'
 import {
   authorize,
   DEFAULT_CONFIRMATION_POLICY,
@@ -1104,10 +1127,618 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
     },
   }
 
+  // ── split 2-up（页级装配）─────────────────────────────────────────────────
+  //
+  // 把 A3 试卷对半切成 A4 是页级装配里最容易做错的一件：渲染再切会丢文字层、字体与矢量。
+  // 这里只改页面框 + 在内容流最前面插一条平移，切完的文字仍然可以搜索、复制。
+  const split: ToolDefinition = {
+    name: 'pdf_split',
+    description:
+      '把 2-up（一张纸印两页）的 PDF 对半切成单页：'
+      + '只要页面 /Rotate 为 0 且长宽比明显偏离 1（≥1.25）就能拆——A3 试卷、'
+      + '720×405pt 的「答案版 + 空白版并排」讲义都可以，与纸张尺寸无关；'
+      + '只改页面框并平移内容流，不栅格化、也不缩放，切出来的页面文字仍可搜索、可复制。'
+      + 'layout 默认 auto（按页面方向推断）；keep 默认 both（两半都留），'
+      + '也可以只留一半：left/right 用于左右排列，top/bottom 用于上下排列——'
+      + '「左=答案版 / 右=空白版」的讲义用 keep=right 直接得到只含空白题的册子，不必先拆再删。'
+      + 'keep 与切法不匹配（例如左右排列传 top）的页会被跳过并给出中文原因。'
+      + 'targetSize 默认 a4，**只做信息提示**：'
+      + '切出的每半如果不是 A4（210×297pt）会在确认单与结果里写明，但不会因此拒绝执行。'
+      + '旋转页、比例接近 1 的页面、方向与 layout 不一致的页会被跳过，并在结果里逐页给出中文原因。'
+      + 'gutter=middle（默认）严格按中线切；gutter=auto 会低倍渲染，按「左右内容框的间隔」找中缝'
+      + '（间隔 ≥ 8pt 才算找到），找不到或偏离中线 > 15% 就回退中线并说明。'
+      + '生成新文件，绝不覆盖源文件。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      layout: {
+        type: 'string',
+        enum: ['auto', 'left-right', 'top-bottom'],
+        description: '切法：auto（默认）按页面方向推断；left-right 左右切；top-bottom 上下切。',
+      },
+      keep: {
+        type: 'string',
+        enum: ['both', 'left', 'right', 'top', 'bottom'],
+        description: '保留哪一半：both（默认）两半都留；left/right 只留左半/右半；top/bottom 只留上半/下半。',
+      },
+      gutter: {
+        type: 'string',
+        enum: ['middle', 'auto'],
+        description: '切分线：middle（默认）严格中线；auto 渲染找两栏之间的中缝（≥8pt），找不到回退中线。',
+      },
+      pages: { type: 'string', description: '要拆的页，例如 "1-3,7"；省略则全部页。' },
+      targetSize: {
+        type: 'string',
+        enum: ['a4', 'keep'],
+        description: 'a4（默认）只做提示：切出的每半若不是 210×297pt（±3pt）会在结果里写明；keep 不提示。',
+      },
+      output: { type: 'string', description: '输出路径。省略则生成 <名字>-split.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({ card: 'generic', title: `拆分 2-up ${basename(String(args.path ?? ''))}`, kind: 'write' }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const output = resolveOutput(source, args, '-split', options.workspaceRoot)
+      const doc = await loadPdfDocument(source)
+      const pageCount = doc.getPageCount()
+      if (pageCount < 1) throw new Error(`${basename(source)} 没有可拆分的页面`)
+
+      const layoutArg = typeof args.layout === 'string' ? args.layout : 'auto'
+      const layout: 'auto' | TwoUpAxis = layoutArg === 'left-right' || layoutArg === 'top-bottom' ? layoutArg : 'auto'
+      const gutterMode = args.gutter === 'auto' ? 'auto' : 'middle'
+      const targetSize = args.targetSize === 'keep' ? 'keep' : 'a4'
+      const keep: SplitKeep = args.keep === 'left' || args.keep === 'right' || args.keep === 'top' || args.keep === 'bottom'
+        ? args.keep
+        : 'both'
+      const pagesSpec = optionalString(args, 'pages')
+      const selected = pagesSpec === undefined
+        ? Array.from({ length: pageCount }, (_, index) => index)
+        : parsePageSelection(pagesSpec, pageCount)
+
+      interface SplitPlan { index: number; axis: TwoUpAxis; gutterPt: number; detection?: GutterDetection }
+      const planned: SplitPlan[] = []
+      const skipped: Array<{ page: number; reason: string }> = []
+      const detections: Array<{ page: number; detection: GutterDetection }> = []
+      // targetSize='a4' 时只收集「切出来不是 A4」的事实，用于提示——**不**作为跳过理由。
+      const notA4: Array<{ page: number; axis: TwoUpAxis; size: { width: number; height: number } }> = []
+
+      for (const index of selected) {
+        const page = doc.getPages()[index]
+        if (page === undefined) continue
+        const boxes = readPageBoxes(page)
+        const classification = classifyTwoUp(page, boxes)
+        if (!classification.ok) {
+          skipped.push({ page: index + 1, reason: classification.reason ?? '不是可拆的 2-up 页面' })
+          continue
+        }
+        if (layout !== 'auto' && classification.axis !== layout) {
+          skipped.push({
+            page: index + 1,
+            reason: `页面方向是 ${classification.axis}（${boxes.width.toFixed(1)}×${boxes.height.toFixed(1)}pt），与 layout=${layout} 不一致`,
+          })
+          continue
+        }
+        if (!keepMatchesAxis(classification.axis, keep)) {
+          skipped.push({
+            page: index + 1,
+            reason: `这一页是${axisLabel(classification.axis)}排列，keep=${keep} 不适用；`
+              + `${axisLabel(classification.axis)}排列请用 ${keepOptionsFor(classification.axis)}`,
+          })
+          continue
+        }
+        if (targetSize === 'a4' && !isA4Half(classification.halfSize)) {
+          notA4.push({ page: index + 1, axis: classification.axis, size: classification.halfSize })
+        }
+        const extent = classification.axis === 'left-right' ? boxes.visible.width : boxes.visible.height
+        if (gutterMode === 'auto') {
+          const detection = await detectGutter(source, index + 1, { axis: classification.axis })
+          detections.push({ page: index + 1, detection })
+          planned.push({ index, axis: classification.axis, gutterPt: detection.gutterPt, detection })
+        } else {
+          planned.push({ index, axis: classification.axis, gutterPt: extent / 2 })
+        }
+      }
+
+      const defaults: Record<string, unknown> = {}
+      if (args.layout === undefined) defaults.layout = 'auto'
+      if (args.keep === undefined) defaults.keep = 'both'
+      if (args.gutter === undefined) defaults.gutter = 'middle'
+      if (args.targetSize === undefined) defaults.targetSize = 'a4'
+      if (pagesSpec === undefined) defaults.pages = `全部 ${pageCount} 页`
+
+      const notes: string[] = []
+      for (const { page, detection } of detections) {
+        notes.push(detection.fellBack
+          ? `第 ${page} 页的切分线检测回退中线：${detection.reason ?? '未找到可靠中缝'}`
+          : `第 ${page} 页测到中缝：切分线在 ${detection.gutterPt.toFixed(1)}pt 处（间隔 ${detection.bandWidthPt.toFixed(1)}pt，置信度 ${detection.confidence}）`)
+      }
+      const mmOf = (pt: number): number => (pt * 25.4) / 72
+      const a4Hint = (size: { width: number; height: number }): string =>
+        `切出的一页是 ${size.width.toFixed(1)}×${size.height.toFixed(1)}pt`
+        + `（${mmOf(size.width).toFixed(0)}×${mmOf(size.height).toFixed(0)}mm），不是 A4（210×297pt）；`
+        + '需要 A4 可打印尺寸必须先缩放（当前版本不做缩放）。'
+      // 按尺寸归并，避免 20 页时同一句提示刷 20 遍。
+      const notA4Groups = new Map<string, { size: { width: number; height: number }; pages: number[] }>()
+      for (const item of notA4) {
+        const key = `${item.size.width.toFixed(2)}x${item.size.height.toFixed(2)}`
+        const group = notA4Groups.get(key) ?? { size: item.size, pages: [] }
+        group.pages.push(item.page)
+        notA4Groups.set(key, group)
+      }
+      for (const group of notA4Groups.values()) {
+        notes.push(`${a4Hint(group.size)}（涉及第 ${group.pages.join(', ')} 页）`)
+      }
+      if (skipped.length > 0) {
+        notes.push(`将跳过 ${skipped.length} 页不规范页：${skipped.map(item => `第 ${item.page} 页（${item.reason}）`).join('；')}`)
+      }
+
+      const refusals: string[] = []
+      if (planned.length === 0) {
+        refusals.push(`选中的 ${selected.length} 页都不是可拆的 2-up 页面，没有可拆的内容`)
+        for (const item of skipped) refusals.push(`第 ${item.page} 页：${item.reason}`)
+      }
+
+      const keepEffect = keep === 'both'
+        ? `把 ${planned.length} 页拆成 ${planned.length * 2} 页`
+        : `每页只保留${keepLabel(keep)}，输出 ${planned.length} 页（不产出另一半）`
+
+      const gate = authorize({
+        tool: 'pdf_split',
+        action: 'split',
+        parameters: { layout, keep, gutter: gutterMode, targetSize, pages: pagesSpec ?? '全部', pageCount },
+        inputs: [source],
+        output,
+        pageCount,
+        ...(pagesSpec === undefined ? { wholeDocument: true } : {}),
+        defaults,
+        notes,
+        refusals,
+        hints: ['切法不对就说「按上下切」', '只想拆某几页就说「只拆第 1、3 页」', '缝不在正中就用 gutter=auto 测缝', '只要空白版就说「只保留右半」'],
+        effects: [
+          '不修改源文件，结果写入新的 PDF',
+          keepEffect,
+          '拆分只改页面框并平移内容流，不栅格化、不缩放（文字仍可搜索）',
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+      // `force: true` 会跳过门控，所以这里再兜一次：没有可拆的页就绝不做出一份空文件。
+      if (planned.length === 0) throw new Error('没有可拆分的 2-up 页面，未生成文件。')
+
+      const out = await PDFDocument.create()
+      const produced: Array<{ source: number; axis: TwoUpAxis }> = []
+      for (const item of planned) {
+        const [copied] = await out.copyPages(doc, [item.index])
+        out.addPage(copied)
+        if (keep === 'both') {
+          splitPageIntoHalves(out, copied, { axis: item.axis, gutterPt: item.gutterPt })
+        } else {
+          splitPageKeepingHalf(out, copied, { axis: item.axis, gutterPt: item.gutterPt, keep })
+        }
+        produced.push({ source: item.index + 1, axis: item.axis })
+      }
+      const bytes = await out.save({ updateMetadata: false })
+      await mkdir(dirname(output), { recursive: true })
+      await writeFile(output, bytes)
+
+      const halfNames = (axis: TwoUpAxis): [string, string] => axis === 'left-right' ? ['左', '右'] : ['上', '下']
+      const lines = [
+        `已生成：${output}`,
+        keep === 'both'
+          ? `拆了 ${planned.length} 页，得到 ${out.getPageCount()} 页：`
+            + produced.map((item, n) => `第 ${item.source} 页 → 输出第 ${n * 2 + 1}、${n * 2 + 2} 页`).join('；')
+          : `只保留了每页的${keepLabel(keep)}：共 ${out.getPageCount()} 页（源第 ${produced.map(item => item.source).join(', ')} 页）。`,
+      ]
+      if (keep === 'both') {
+        lines.push(`输出页序：${produced.flatMap(item => halfNames(item.axis).map(half => `第${item.source}页${half}半`)).join(' → ')}`)
+      } else {
+        lines.push(`每一页只改了页面框，只保留${keepLabel(keep)}的内容；另一半没有被写进输出。`)
+      }
+      if (skipped.length > 0) {
+        lines.push(`跳过 ${skipped.length} 页：${skipped.map(item => `第 ${item.page} 页（${item.reason}）`).join('；')}`)
+      }
+      if (gutterMode === 'auto') {
+        lines.push('切分线（gutter=auto）：' + detections.map(({ page, detection }) => detection.fellBack
+          ? `第 ${page} 页回退中线 ${detection.gutterPt.toFixed(1)}pt（${detection.reason ?? ''}）`
+          : `第 ${page} 页测到中缝 ${detection.gutterPt.toFixed(1)}pt（间隔 ${detection.bandWidthPt.toFixed(1)}pt，置信度 ${detection.confidence}）`).join('；'))
+      } else {
+        lines.push('切分线：严格按中线（gutter=middle）。')
+      }
+      lines.push('注意：源文件未被改动，输出是新文件。')
+      if (targetSize === 'a4' && notA4.length > 0) {
+        for (const group of notA4Groups.values()) {
+          lines.push(`注意：${a4Hint(group.size)}`)
+        }
+      }
+      if (skipped.length > 0) {
+        lines.push('注意：被跳过的页面没有写进输出；旋转页请先用 pdf_arrange 的 rotate 处理，比例接近 1 的页面请先确认是不是 2-up 版面。')
+      }
+      lines.push('注意：拆分只改页面框与内容流平移，页面上的批注/表单域会随页树保留（暂不按半边拆分或删除批注）。')
+      return { text: lines.join('\n') }
+    },
+  }
+
+  // ── crop（批量裁剪）────────────────────────────────────────────────────────
+  const crop: ToolDefinition = {
+    name: 'pdf_crop',
+    description:
+      '批量裁剪 PDF 的页面框：只裁不缩，绝不缩放页面内容。'
+      + 'mode=fixed（默认）用同一个矩形（box，单位 pt，原点左下；越界会自动收拢并提示）；'
+      + 'mode=trim 逐页渲染找内容边界（暗像素包围盒）再加 margin（默认 6pt）留白，'
+      + 'uniform（默认 true）时取所有页边界的并集，保证裁完每页尺寸一致。'
+      + '默认同时把 /MediaBox 与 /CropBox 设为裁切后区域，setCropBoxOnly=true 则只改 /CropBox。'
+      + '生成新文件，绝不覆盖源文件。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      mode: {
+        type: 'string',
+        enum: ['fixed', 'trim'],
+        description: 'fixed（默认）用 box 指定矩形；trim 逐页找内容边界再加 margin。',
+      },
+      box: {
+        type: 'object',
+        description: 'mode=fixed 的裁切框（pt，原点左下）：{left,bottom,right,top}。',
+        properties: {
+          left: { type: 'number', required: true, description: '左边界（pt）。' },
+          bottom: { type: 'number', required: true, description: '下边界（pt）。' },
+          right: { type: 'number', required: true, description: '右边界（pt）。' },
+          top: { type: 'number', required: true, description: '上边界（pt）。' },
+        },
+      },
+      margin: { type: 'number', description: 'mode=trim 的留白（pt），默认 6。' },
+      uniform: { type: 'boolean', description: 'mode=trim 是否取所有页边界的并集（保证尺寸一致），默认 true。' },
+      setCropBoxOnly: { type: 'boolean', description: '只改 /CropBox、不动 /MediaBox，默认 false（两个都改）。' },
+      pages: { type: 'string', description: '要裁的页，例如 "1-3,7"；省略则全部页。' },
+      output: { type: 'string', description: '输出路径。省略则生成 <名字>-cropped.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({ card: 'generic', title: `裁剪 ${basename(String(args.path ?? ''))}`, kind: 'write' }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const output = resolveOutput(source, args, '-cropped', options.workspaceRoot)
+      const mode = args.mode === 'trim' ? 'trim' : 'fixed'
+      const pagesSpec = optionalString(args, 'pages')
+      const margin = typeof args.margin === 'number' && Number.isFinite(args.margin) ? args.margin : 6
+      const uniform = args.uniform === undefined ? true : args.uniform === true
+      const setCropBoxOnly = args.setCropBoxOnly === true
+      if (margin < 0) throw new Error('margin 不能是负数')
+
+      let box: CropBoxInput | undefined
+      const missing: string[] = []
+      const rawBox = args.box
+      if (rawBox !== undefined && rawBox !== null) {
+        if (typeof rawBox !== 'object' || Array.isArray(rawBox)) {
+          throw new Error('box 必须是 {left,bottom,right,top} 对象（单位 pt）')
+        }
+        const entry = rawBox as Record<string, unknown>
+        const nums = ['left', 'bottom', 'right', 'top'].map(key => Number(entry[key]))
+        if (nums.some(value => !Number.isFinite(value))) {
+          throw new Error('box 的 left/bottom/right/top 必须都是数字（单位 pt）')
+        }
+        box = { left: nums[0], bottom: nums[1], right: nums[2], top: nums[3] }
+      }
+      if (mode === 'fixed' && box === undefined) {
+        missing.push('裁切框 box（left/bottom/right/top，单位 pt）')
+      }
+      if (mode === 'fixed' && box !== undefined) {
+        if (box.right <= box.left) throw new Error(`box 无效：right（${box.right}）必须大于 left（${box.left}）`)
+        if (box.top <= box.bottom) throw new Error(`box 无效：top（${box.top}）必须大于 bottom（${box.bottom}）`)
+      }
+
+      const doc = await loadPdfDocument(source)
+      const pageCount = doc.getPageCount()
+      if (pageCount < 1) throw new Error(`${basename(source)} 没有可裁剪的页面`)
+      const selected = pagesSpec === undefined
+        ? Array.from({ length: pageCount }, (_, index) => index)
+        : parsePageSelection(pagesSpec, pageCount)
+
+      const defaults: Record<string, unknown> = {}
+      if (args.mode === undefined) defaults.mode = 'fixed'
+      if (args.margin === undefined) defaults.margin = 6
+      if (args.uniform === undefined) defaults.uniform = true
+      if (args.setCropBoxOnly === undefined) defaults.setCropBoxOnly = false
+      if (pagesSpec === undefined) defaults.pages = `全部 ${pageCount} 页`
+
+      const gate = authorize({
+        tool: 'pdf_crop',
+        action: 'crop',
+        parameters: {
+          mode,
+          box: box ?? '（缺失）',
+          margin,
+          uniform,
+          setCropBoxOnly,
+          pages: pagesSpec ?? '全部',
+          pageCount,
+        },
+        inputs: [source],
+        output,
+        pageCount,
+        ...(pagesSpec === undefined ? { wholeDocument: true } : {}),
+        missing,
+        defaults,
+        hints: ['裁多了就说「上下再多留 20pt」', '扫描件黑边用 mode=trim 自动收', '只想裁某几页就说「只裁第 2 页」'],
+        effects: [
+          '不修改源文件，结果写入新的 PDF',
+          `只改页面框，不缩放内容；处理 ${selected.length} 页`,
+          setCropBoxOnly ? '只改 /CropBox' : '同时改 /MediaBox 与 /CropBox',
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+      if (mode === 'fixed' && box === undefined) throw new Error('mode=fixed 需要 box，未生成文件。')
+
+      const outcomes = await cropPages(doc, selected, {
+        mode,
+        ...(box === undefined ? {} : { box }),
+        margin,
+        uniform,
+        setCropBoxOnly,
+        sourcePath: source,
+      })
+      const bytes = await doc.save({ updateMetadata: false })
+      await mkdir(dirname(output), { recursive: true })
+      await writeFile(output, bytes)
+
+      const formatBox = (value: { x: number; y: number; width: number; height: number }): string =>
+        `[${value.x.toFixed(1)}, ${value.y.toFixed(1)}, ${(value.x + value.width).toFixed(1)}, ${(value.y + value.height).toFixed(1)}]`
+      const lines = [
+        `已生成：${output}`,
+        `裁剪 ${outcomes.length} 页（mode=${mode}，margin=${margin}pt，uniform=${String(uniform)}，`
+          + `${setCropBoxOnly ? '只改 /CropBox' : '同时改 /MediaBox 与 /CropBox'}），只裁不缩。`,
+        ...outcomes.slice(0, 20).map(item =>
+          `  第 ${item.page} 页 → ${formatBox(item.box)}（裁掉 ${(item.croppedRatio * 100).toFixed(1)}% 面积）`),
+        ...(outcomes.length > 20 ? [`  …其余 ${outcomes.length - 20} 页省略`] : []),
+      ]
+      const notes = outcomes.flatMap(item => item.notes)
+      for (const note of notes.slice(0, 10)) lines.push(`注意：${note}`)
+      if (notes.length > 10) lines.push(`注意：另有 ${notes.length - 10} 条收拢提示省略。`)
+      lines.push('注意：源文件未被改动，输出是新文件；裁剪不缩放，内容坐标保持原值。')
+      if (mode === 'trim') {
+        lines.push('注意：trim 的边界来自低倍渲染的暗像素包围盒，浅色内容（很浅的灰底、细彩线）可能不算作内容。')
+      }
+      return { text: lines.join('\n') }
+    },
+  }
+
+  // ── arrange（重排页序）────────────────────────────────────────────────────
+  const arrange: ToolDefinition = {
+    name: 'pdf_arrange',
+    description:
+      '重排页序：按 order 重新排列页面，可选删除若干页、可选旋转若干页。'
+      + 'order 支持显式列表 "1,3,5"、区间 "1-3,7,4-6"，以及预设 odd-even（先所有奇数页、再所有偶数页）/ '
+      + 'reverse（逆序）/ swap-pairs（2,1,4,3…）。'
+      + 'delete 按**原文件页号**删除（与 order 不能重叠）。'
+      + 'rotate 形如 {"pages":"1-3","angle":90}，pages 指**重排后**的页号，只改 /Rotate、不动内容。'
+      + '它只改顺序与 /Rotate，不裁剪、不缩放页面几何。生成新文件，绝不覆盖源文件。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      path: { type: 'string', required: true, description: '源 PDF 路径。' },
+      order: {
+        type: 'string',
+        description: '页序：1,3,5 / 1-3,7,4-6 / odd-even / reverse / swap-pairs。必填。',
+      },
+      delete: { type: 'string', description: '要删除的原页号范围，例如 "2,5"；省略则不删除。' },
+      rotate: {
+        type: 'object',
+        description: '可选旋转：{"pages":"1-3","angle":90}；pages 指重排后的页号。',
+        properties: {
+          pages: { type: 'string', required: true, description: '重排后的页号，例如 "1-3"。' },
+          angle: { type: 'number', required: true, description: '旋转角度，90 的倍数。' },
+        },
+      },
+      output: { type: 'string', description: '输出路径。省略则生成 <名字>-arranged.pdf。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({ card: 'generic', title: `重排 ${basename(String(args.path ?? ''))}`, kind: 'write' }),
+    async execute(args) {
+      const source = resolveInput(args)
+      const output = resolveOutput(source, args, '-arranged', options.workspaceRoot)
+      const doc = await loadPdfDocument(source)
+      const pageCount = doc.getPageCount()
+      if (pageCount < 1) throw new Error(`${basename(source)} 没有可重排的页面`)
+
+      const orderSpec = optionalString(args, 'order')
+      const deleteSpec = optionalString(args, 'delete')
+      const missing: string[] = []
+      if (orderSpec === undefined) {
+        missing.push('页序 order（例如 1,3,5，或 odd-even / reverse / swap-pairs）')
+      }
+      const order = orderSpec === undefined ? undefined : parsePageOrder(orderSpec, pageCount)
+      const removed = deleteSpec === undefined ? [] : parsePageSelection(deleteSpec, pageCount)
+      const removedSet = new Set(removed)
+      if (order !== undefined) {
+        const clash = order.find(index => removedSet.has(index))
+        if (clash !== undefined) {
+          throw new Error(`页序里的第 ${clash + 1} 页已被 delete 删除，请把 order 与 delete 改成不重叠。`)
+        }
+      }
+
+      let rotateSpec: { pagesSpec: string; angle: number; indices: number[] } | undefined
+      const rawRotate = args.rotate
+      if (rawRotate !== undefined && rawRotate !== null) {
+        if (typeof rawRotate !== 'object' || Array.isArray(rawRotate)) {
+          throw new Error('rotate 必须是 {"pages":"1-3","angle":90} 这样的对象')
+        }
+        const entry = rawRotate as Record<string, unknown>
+        const pagesText = typeof entry.pages === 'string' && entry.pages.trim() !== '' ? entry.pages.trim() : undefined
+        const angle = Number(entry.angle)
+        if (pagesText === undefined) throw new Error('rotate.pages 缺失：请写明要旋转哪些页（重排后的页号）')
+        if (!Number.isFinite(angle) || angle % 90 !== 0) throw new Error('rotate.angle 必须是 90 的倍数')
+        if (order === undefined) throw new Error('rotate 需要同时给出 order（pages 指重排后的页号）')
+        rotateSpec = { pagesSpec: pagesText, angle, indices: parsePageSelection(pagesText, order.length) }
+      }
+
+      const defaults: Record<string, unknown> = {}
+      if (deleteSpec === undefined) defaults.delete = '不删除任何页'
+      if (rotateSpec === undefined) defaults.rotate = '不旋转'
+
+      const notes: string[] = []
+      if (removed.length > 0) notes.push(`将删除 ${removed.length} 页：第 ${removed.map(index => index + 1).join(', ')} 页`)
+
+      const gate = authorize({
+        tool: 'pdf_arrange',
+        action: 'arrange',
+        parameters: {
+          order: orderSpec ?? '（缺失）',
+          delete: deleteSpec ?? '无',
+          rotate: rotateSpec === undefined ? '无' : { pages: rotateSpec.pagesSpec, angle: rotateSpec.angle },
+          pageCount,
+        },
+        inputs: [source],
+        output,
+        pageCount,
+        missing,
+        defaults,
+        notes,
+        hints: ['想逆序就说 order=reverse', '想先奇后偶就说 order=odd-even', '想转正某几页就加 rotate'],
+        effects: [
+          '不修改源文件，结果写入新的 PDF',
+          `只改页序${removed.length > 0 ? '并删除指定页' : ''}${rotateSpec === undefined ? '' : '，并写入新的 /Rotate'}`,
+          '不改动页面几何，不裁剪、不缩放',
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+      if (order === undefined) throw new Error('缺少 order：请写明页序，未生成文件。')
+
+      const out = await PDFDocument.create()
+      const copied = await out.copyPages(doc, order)
+      for (const page of copied) out.addPage(page)
+      const rotated = rotateSpec === undefined ? [] : rotatePages(out, rotateSpec.indices, rotateSpec.angle)
+      const bytes = await out.save({ updateMetadata: false })
+      await mkdir(dirname(output), { recursive: true })
+      await writeFile(output, bytes)
+
+      const lines = [
+        `已生成：${output}`,
+        `原 ${pageCount} 页 → 输出 ${out.getPageCount()} 页${removed.length > 0 ? `（删除 ${removed.length} 页）` : ''}。`,
+        `页序：${orderSpec ?? ''} → 第 ${order.map(index => index + 1).join(', ')} 页。`,
+      ]
+      if (removed.length > 0) lines.push(`删除的原页号：第 ${removed.map(index => index + 1).join(', ')} 页。`)
+      if (rotated.length > 0) {
+        lines.push(`旋转：${rotated.map(item => `重排后第 ${item.page} 页 ${item.from}°→${item.to}°`).join('；')}（只改 /Rotate）。`)
+      }
+      lines.push('注意：源文件未被改动，输出是新文件；重排只改顺序，不改页面几何。')
+      return { text: lines.join('\n') }
+    },
+  }
+
+  // ── merge（合并）───────────────────────────────────────────────────────────
+  const merge: ToolDefinition = {
+    name: 'pdf_merge',
+    description:
+      '按文件顺序合并多个 PDF：paths 至少 2 个文件；ranges 可选、与 paths 一一对应'
+      + '（例如 ["1-3","","5"]，空串表示整份取全）。'
+      + '每页来源（文件名 + 原页号）会在结果里列出。'
+      + '输出默认落在第一个文件所在目录（<第一个文件名>-merged.pdf）。生成新文件，绝不覆盖任何源文件。',
+    parameters: {
+      ...CONFIRM_PARAMS,
+      paths: {
+        type: 'array',
+        required: true,
+        items: { type: 'string', description: '一个要合并的 PDF 路径。' },
+        description: '要合并的 PDF 路径列表（至少 2 个，按给出顺序拼接）。',
+      },
+      ranges: {
+        type: 'array',
+        items: { type: 'string', description: '该文件要取的页范围，空串表示整份。' },
+        description: '与 paths 一一对应的页范围，例如 ["1-3","","5"]；省略则每个文件取全部页。',
+      },
+      output: { type: 'string', description: '输出路径。省略则生成在第一个文件所在目录（<第一个文件名>-merged.pdf）。' },
+    },
+    output: TEXT_OUTPUT,
+    presentCall: args => ({
+      card: 'generic',
+      title: `合并 ${Array.isArray(args.paths) ? args.paths.length : 0} 个文件`,
+      kind: 'write',
+    }),
+    async execute(args) {
+      const rawPaths = Array.isArray(args.paths)
+        ? (args.paths as unknown[]).map(value => String(value).trim()).filter(value => value !== '')
+        : []
+      if (rawPaths.length < 2) {
+        throw new Error(`合并至少需要 2 个文件，当前只给了 ${rawPaths.length} 个`)
+      }
+      const paths = rawPaths.map(raw => {
+        const full = resolve(raw)
+        if (!existsSync(full)) throw new Error(`文件不存在：${full}`)
+        if (extname(full).toLowerCase() !== '.pdf') throw new Error(`不是 PDF 文件：${full}`)
+        return full
+      })
+      const rangesArg = Array.isArray(args.ranges)
+        ? (args.ranges as unknown[]).map(value => (value === undefined || value === null ? '' : String(value).trim()))
+        : undefined
+      if (rangesArg !== undefined && rangesArg.length > paths.length) {
+        throw new Error(`ranges 有 ${rangesArg.length} 项，多于 paths 的 ${paths.length} 个文件`)
+      }
+
+      const requested = optionalString(args, 'output')
+      let output: string
+      if (requested !== undefined) {
+        output = resolve(options.workspaceRoot, requested)
+        if (paths.some(path => path === output)) throw new Error('输出路径不能与任何源文件相同')
+      } else {
+        output = join(dirname(paths[0]), `${basename(paths[0], extname(paths[0]))}-merged.pdf`)
+      }
+
+      const defaults: Record<string, unknown> = {}
+      if (rangesArg === undefined) defaults.ranges = '每个文件取全部页'
+
+      const gate = authorize({
+        tool: 'pdf_merge',
+        action: 'merge',
+        parameters: {
+          files: paths.map(path => basename(path)),
+          ranges: rangesArg ?? '全部页',
+          fileCount: paths.length,
+        },
+        inputs: paths,
+        output,
+        defaults,
+        hints: ['只想取某个文件的前几页就用 ranges', '输出默认放在第一个文件旁边'],
+        effects: [
+          '不修改任何源文件，结果写入新的 PDF',
+          `按顺序拼接 ${paths.length} 个文件`,
+        ],
+        ...confirmationArgs(options, args),
+      })
+      if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
+      if (gate.kind === 'refused') throw new Error(gate.message)
+
+      const result = await mergeDocuments(paths, rangesArg)
+      const bytes = await result.doc.save({ updateMetadata: false })
+      await mkdir(dirname(output), { recursive: true })
+      await writeFile(output, bytes)
+
+      // 逐页来源按文件归并，避免几十页时把结果文本撑爆。
+      const byFile: Array<{ file: string; pages: number[] }> = []
+      for (const page of result.pages) {
+        const last = byFile[byFile.length - 1]
+        if (last !== undefined && last.file === page.file) last.pages.push(page.sourcePage)
+        else byFile.push({ file: page.file, pages: [page.sourcePage] })
+      }
+      const summarize = (pages: number[]): string =>
+        pages.length <= 12 ? `第 ${pages.join(', ')} 页` : `第 ${pages.slice(0, 12).join(', ')} 页等共 ${pages.length} 页`
+      const lines = [
+        `已生成：${output}`,
+        `合并 ${paths.length} 个文件，共 ${result.pageCount} 页：`
+          + byFile.map(item => `${item.file}（${summarize(item.pages)}）`).join(' → '),
+        ...result.notes.map(note => `来源：${note}`),
+      ]
+      lines.push('注意：所有源文件都未被改动，输出是新文件。')
+      return { text: lines.join('\n') }
+    },
+  }
+
   // Compile to the registry-ready shape. Argument validation is wrapped around
   // `execute` here, so a malformed call fails with a readable message instead of
   // a TypeError from deep inside a tool body.
-  return [inspect, extract, searchable, edit, replaceLine, watermark, protect, preview].map((definition) => {
+  return [inspect, extract, searchable, edit, replaceLine, watermark, protect, preview, split, crop, arrange, merge].map((definition) => {
     const parameters = compileParameters(definition.parameters)
     const execute = definition.execute
     return {

@@ -2,7 +2,9 @@
 
 面向**普通用户**和**他们的助手**。文中的工具名、参数名、枚举值都取自
 `src/host/tools.ts`，阈值取自 `src/core/confirmation.ts`（整档 OCR / 可搜索化 > 20 页、
-整档 > 200 页、计划有效期 15 分钟）。机制细节见 README 的「执行前确认」。
+整档 > 200 页、计划有效期 15 分钟）与 `src/core/page-assembly.ts`
+（2-up 判定长宽比 ≥ 1.25、中缝间隔 ≥ 8pt、缝偏离中线 > 15% 回退、trim 默认留白 6pt、
+A4 提示容差 ±3pt）。机制细节见 README 的「执行前确认」与「页级装配」。
 
 复制下面任意一段就能用。把 `<路径>`、`<文字>` 换成你自己的值。
 
@@ -56,16 +58,23 @@
 | 删水印 | `pdf_watermark` | `action: remove`、`output` |
 | 加密 / 解密 | `pdf_protect` | `action: encrypt\|decrypt`、`password`、`allow`（`print` / `modify` / `extract` / `annotate` / `form` / `assembly` / `high-quality-print`）、`output` |
 | 查加密状态 | `pdf_protect` | `action: check`（只读） |
-| 只想先看计划，不要执行 | 除 `pdf_preview` 外的 7 个工具 | `plan: true`（`watermark action=scan`、`protect action=check` 这两个只读分支不会返回计划） |
+| 把 2-up 拆成单页（A3 试卷 / 并排讲义） | `pdf_split` | `path`、`layout: auto\|left-right\|top-bottom`、`keep: both\|left\|right\|top\|bottom`、`gutter: middle\|auto`、`pages`、`targetSize: a4\|keep`、`output` |
+| 批量裁掉白边 / 裁到指定矩形 | `pdf_crop` | `path`、`mode: fixed\|trim`、`box: {left,bottom,right,top}`（fixed 必填）、`margin`（默认 6pt）、`uniform`（默认 true）、`setCropBoxOnly`、`pages`、`output` |
+| 重排页序 / 删页 / 转正某几页 | `pdf_arrange` | `path`、`order`（必填：`1,3,5` / `1-3,7` / `odd-even` / `reverse` / `swap-pairs`）、`delete`、`rotate: {pages, angle}`、`output` |
+| 把多个文件按顺序合并 | `pdf_merge` | `paths`（≥2 个）、`ranges`（与 `paths` 一一对应，可省）、`output` |
+| 只想先看计划，不要执行 | 除 `pdf_preview` 外的 11 个工具 | `plan: true`（`watermark action=scan`、`protect action=check` 这两个只读分支不会返回计划） |
 
 默认值（不指定时实际生效的值）：水印 `render=text`、`placement=tile`、`opacity=0.15`、
 `fontSize=48`、`color=#d92626`、`margin=24`、`artifact=true`、`pages=全部`（`rotation` 平铺时 45°、其它 0°）；
-可搜索化 `mode=invisible`；加密只给 `print` 权限。默认输出名：
-`-searchable.pdf` / `-edited.pdf` / `-line-redrawn.pdf` / `-watermarked.pdf` / `-clean.pdf` / `-protected.pdf` / `-unlocked.pdf`。
+可搜索化 `mode=invisible`；加密只给 `print` 权限；页级装配里拆分 `layout=auto`、`keep=both`、
+`gutter=middle`、`targetSize=a4`；裁剪 `mode=fixed`、`margin=6`、`uniform=true`、`setCropBoxOnly=false`。
+默认输出名：
+`-searchable.pdf` / `-edited.pdf` / `-line-redrawn.pdf` / `-watermarked.pdf` / `-clean.pdf` / `-protected.pdf` / `-unlocked.pdf` /
+`-split.pdf` / `-cropped.pdf` / `-arranged.pdf`（合并默认是 `<第一个文件名>-merged.pdf`，落在第一个文件所在目录）。
 
 ---
 
-## 三、7 个可直接复制的模板
+## 三、11 个可直接复制的模板
 
 ### 模板 1 · 先探后报（什么都不改）
 
@@ -166,13 +175,83 @@
 如果结果里的「注意：」说这一组还包含别的文字，先把组内原文念给我听，再决定是整组重写还是改用 pdf_edit_text。
 ```
 
+### 模板 8 · 把 A3 试卷拆成 A4 / 只要空白版
+
+```
+把 <路径> 这份 2-up 讲义拆成单页：
+- layout=auto（按页面方向自动判断左右还是上下切）
+- gutter=middle（缝就在正中；如果缝偏了再改成 gutter=auto 让它自己找）
+- targetSize=a4（切出来不是 A4 时告诉我，但不要因此不拆）
+- output=<输出路径>.pdf
+
+做完告诉我：
+1) 处理了哪几页、每页切出两页的对应关系；
+2) 输出页数、每页尺寸（pt），以及是不是 A4；
+3) 有没有被跳过的页、原因是什么（旋转页 / 比例接近 1 的页会被跳过）；
+4) 回读输出文件，确认第 1 页能提取到左半的文字、第 2 页能提取到右半的文字，且互不串页。
+
+如果我只想要学生版（空白题那半）：把 keep=right（答案版则是 keep=left），
+这样每页只输出 1 页，不用先拆成两份再删。
+注意：拆分只改纸张边界、不缩放；要 A4 可打印尺寸需要后续缩放能力，当前版本不做。
+```
+
+### 模板 9 · 批量裁掉扫描件的黑边
+
+```
+把扫描件 <路径> 的黑边/白边收干净：
+- mode=trim（逐页渲染找内容边界，再按 margin 留白）
+- margin=6（单位 pt；想留多一点就说 margin=18）
+- uniform=true（取所有页边界的并集，保证裁完每页尺寸一致）
+- output=<输出路径>.pdf
+
+做完告诉我：
+1) 裁了几页、每页的裁切框 [x0,y0,x1,y1] 与裁掉的比例；
+2) 有没有页被收拢（裁切框越出页面可见区域）或没检测到内容；
+3) 用 pdf_preview 渲染第 1 页给我看，确认内容没有被切掉。
+
+注意：只裁不缩（不缩放内容、不改字号）；边界来自低倍渲染的暗像素，很浅的灰底可能不算内容。
+如果我已经量好了框，就改用 mode=fixed，box={"left":…,"bottom":…,"right":…,"top":…}。
+```
+
+### 模板 10 · 重排页序（先奇后偶 / 自定义顺序）
+
+```
+重排 <路径> 的页序：
+- order=<顺序，例如 1,3,5,2,4,6 或 1-3,7,4-6；也可以是预设 odd-even / reverse / swap-pairs>
+- （可选）delete=<要删掉的原页号，例如 9,10>
+- （可选）rotate={"pages":"1-3","angle":90}（pages 指重排后的页号，只改 /Rotate）
+- output=<输出路径>.pdf
+
+做完告诉我：
+1) 原页数 → 输出页数，删掉了哪几页；
+2) 输出页序（每个输出页对应原第几页）；
+3) 哪里旋转了、从多少度到多少度；
+4) 回读输出文件确认页序正确、页数对得上。
+
+说明：pdf_arrange 只改顺序和 /Rotate，不裁剪、不缩放。
+```
+
+### 模板 11 · 把三个文件按顺序合并
+
+```
+把这三个文件按顺序合并成一个：
+- paths=[<文件1>.pdf, <文件2>.pdf, <文件3>.pdf]（按这个顺序拼接）
+- ranges=["1-3", "", "2"]（与 paths 一一对应；空串表示整份取全；不需要就整条省掉）
+- output=<输出路径>.pdf（不给就落在第一个文件旁边：<第一个文件名>-merged.pdf）
+
+做完告诉我：
+1) 合并后的页数；
+2) 每个文件取了哪些页、对应输出第几页（逐文件列出来源）；
+3) 三个源文件的字节都没变。
+```
+
 ---
 
 ## 四、确认机制怎么配合
 
 **什么时候会收到确认单**（工具不写盘，只回一张计划）：
 
-- 破坏性操作：改写正文（`pdf_edit_text`）、整行重绘（`pdf_replace_line`）、删水印（`remove`）、加密 / 解密（`encrypt` / `decrypt`）；
+- 破坏性操作：改写正文（`pdf_edit_text`）、整行重绘（`pdf_replace_line`）、删水印（`remove`）、加密 / 解密（`encrypt` / `decrypt`），以及**全部四个页级装配工具**（`pdf_split` 拆分、`pdf_crop` 裁剪、`pdf_arrange` 重排、`pdf_merge` 合并）——它们改的是页面结构 / 顺序 / 几何，一律先出确认单；
 - 输出文件**已经存在**（会被覆盖）——任何用 `output` 的工具都可能命中，包括加水印；
 - 代价高（默认策略下**不会**自动拦，见本节末「默认问哪几类」）：`pdf_inspect analyze=true`、`pdf_extract_text` 整档且页数 > 20、`pdf_make_searchable` 页数 > 20；
 - 有歧义：没给水印文字 / 图片；整档且页数 > 200；你说的是文件名而它对应多个文件（这一种直接拒绝并列出候选）；
@@ -227,6 +306,8 @@
 | "把文件名改成 X" | 工具没有改名能力，只能"把结果写到 `output=X.pdf`" | "输出到 `<路径>/X.pdf`" |
 | "随便找个地方存就行" | 不指定 `output` 时写到源文件旁的固定后缀名文件；同名文件已存在就会命中"覆盖"确认（覆盖前会先问你一次） | 明确写 `output=<路径>` |
 | "先加密再解密，一起做" | 两个都是破坏性操作，各自要确认；而且解密的输入应该是**加密后的那个输出文件** | 分两步说，第二步的输入写清楚是上一步的输出 |
+| "帮我智能拆分所有页面" | 没有"智能"。`pdf_split` 只会**严格按中线**（`gutter: middle`，默认）或按检测到的中缝切：低倍渲染后取左右内容框之间的间隔（≥ 8pt 才算找到），找不到就回退中线。它不理解"哪一半是答案、哪一半是空白"这类语义 | 说清版式与目标："这是左右两栏，左=答案右=空白，只要空白版 → `keep=right`"；或"缝不在正中，用 `gutter=auto`" |
+| "把 A3 拆成 A4 打印" | 拆分**不缩放**，只改纸张边界：A3（420×297）切开正好是 A4（210×297），但 720×405 这类自定义尺寸切出来还是 360×405，**不是 A4**。工具只会在结果里提示"不是 A4"，不会自动缩到 A4（当前版本没有缩放/拼版能力） | 明确目标是"按版式对半切"还是"缩放到 A4"；后者当前不支持，先如实说明 |
 
 ---
 
@@ -239,7 +320,9 @@
 
 1. 破坏性 / 高成本 / 有歧义的操作，必须在写盘前先拿到用户的确认：
    - 改写文字、整行重绘、删水印、加密、解密，以及"输出文件已存在会被覆盖"；
-   - 没给水印文字/图片、整档 > 200 页、一个名字对应多个文件；
+   - 页级装配（pdf_split 拆分 / pdf_crop 裁剪 / pdf_arrange 重排 / pdf_merge 合并）一律 destructive，
+     必须先把确认单呈现给用户；确认单里若出现"不是 A4"的提示，要原样念给用户听（拆分不缩放）；
+   - 没给水印文字/图片、没给裁剪 box、整档 > 200 页、一个名字对应多个文件；
    - pdf_inspect analyze=true、pdf_extract_text 整档且页数 > 20、pdf_make_searchable 页数 > 20
      （这三类高成本操作在默认策略下插件不会自动拦，所以你更要主动 `plan: true` 先把计划摆出来）。
    先不带 confirm 调一次拿到计划（或显式传 plan: true），把确认单原样呈现给用户，
@@ -260,5 +343,8 @@
 
 6. 不要做没实现的事：改文件名、跨视觉行的整段重排、自动换行、去除栅格化水印，都不支持
    （同一视觉行的整行重绘 + 跨组重排由 `pdf_replace_line` 支持，默认 `shiftSiblings: true`）。
+   页级装配也有边界：拆分**只改纸张边界、不缩放**（要 A4 可打印尺寸需要后续的缩放/拼版能力，
+   当前没有 fit 参数）；拆分只支持 /Rotate 为 0 且长宽比 ≥ 1.25 的 2-up 版式；
+   裁剪只裁不缩；重排只改顺序与 /Rotate、不改几何。
    遇到这类要求直接说明，不要绕。
 ```

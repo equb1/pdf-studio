@@ -517,7 +517,7 @@ if (fontPath === undefined) {
   const tools = new Map(buildToolDefinitions({ workspaceRoot: OUT }).map(tool => [tool.name, tool]))
   const replaceLine = tools.get('pdf_replace_line')
   check('pdf_replace_line 已注册', replaceLine !== undefined)
-  checkEq('工具表共 8 个工具', tools.size, 8)
+  checkEq('工具表共 12 个工具', tools.size, 12)
   check('pdf_replace_line 带 plan/confirm/force',
     ['plan', 'confirm', 'force'].every(key => key in replaceLine.parameters.properties),
     Object.keys(replaceLine.parameters.properties).join(','))

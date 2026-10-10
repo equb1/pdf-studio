@@ -43,8 +43,8 @@ const byName = new Map(tools.map(tool => [tool.name, tool]))
 
 // ── 1. registry shape ───────────────────────────────────────────────────────
 
-check('the expected tools are defined', tools.length === 8, tools.map(t => t.name).join(', '))
-for (const name of ['pdf_inspect', 'pdf_extract_text', 'pdf_make_searchable', 'pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_preview']) {
+check('the expected tools are defined', tools.length === 12, tools.map(t => t.name).join(', '))
+for (const name of ['pdf_inspect', 'pdf_extract_text', 'pdf_make_searchable', 'pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_preview', 'pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge']) {
   check(`  ${name} is present`, byName.has(name))
 }
 

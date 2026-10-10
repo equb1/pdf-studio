@@ -48,6 +48,7 @@ import {
   spansOverlap,
   tokenize,
   type Operation,
+  type Token,
 } from './content-stream.ts'
 import { loadFontkitAdapter, resolveFontForText } from './fonts.ts'
 import { readPageContentStreams } from './text-editor.ts'
@@ -867,6 +868,16 @@ function appendPageContent(page: { node: PageNodeLike }, context: ContextLike, o
 export type WatermarkReason =
   /** Invoked through a Form XObject named as a watermarking tool would name it. */
   | 'named-xobject'
+  /**
+   * The Form XObject carries Acrobat's own watermark identity:
+   * `/PieceInfo << /ADBE_CompoundType << /Private /Watermark >> >>`.
+   */
+  | 'adobe-watermark'
+  /**
+   * The page content stream draws it inside an
+   * `/Artifact << … /Subtype /Watermark … >> BDC … EMC` block.
+   */
+  | 'artifact-wrapper'
   /** Invoked through a Form XObject with no name, but a mark-like body. */
   | 'invisible-xobject'
   /** Drawn inline with a non-trivial rotation. */
@@ -899,17 +910,133 @@ export interface WatermarkScan {
 }
 
 /**
+ * Whether a `PieceInfo` dictionary carries Acrobat's watermark identity.
+ *
+ * Acrobat writes `/PieceInfo << /ADBE_CompoundType << /Private /Watermark >> >>`
+ * on the Form XObject it uses for a mark. The compound entry may name further
+ * dictionaries (`/DocSettings`, `/LastModified`) and the key order is not
+ * guaranteed, so this walks the dictionary recursively instead of requiring
+ * `ADBE_CompoundType` and `Private` to be adjacent, or even on the first level.
+ */
+function pieceInfoMarksWatermark(pieceInfo: PDFDict, context: ContextLike, depth = 0): boolean {
+  if (depth > 8) return false
+  const compoundRaw = pieceInfo.get(PDFName.of('ADBE_CompoundType'))
+  if (compoundRaw !== undefined) {
+    const compound = context.lookup(compoundRaw)
+    if (compound instanceof PDFDict) {
+      const privateValue = context.lookup(compound.get(PDFName.of('Private')))
+      if (privateValue instanceof PDFName && privateValue.asString() === '/Watermark') return true
+    }
+  }
+  for (const [, value] of pieceInfo.entries()) {
+    if (value === compoundRaw) continue
+    const nested = context.lookup(value)
+    if (nested instanceof PDFDict && pieceInfoMarksWatermark(nested, context, depth + 1)) return true
+  }
+  return false
+}
+
+/** Whether a Form XObject's dictionary declares itself an Acrobat watermark. */
+function hasAdobeWatermarkPieceInfo(dict: PDFDict, context: ContextLike): boolean {
+  const pieceInfoRaw = dict.get(PDFName.of('PieceInfo'))
+  if (pieceInfoRaw === undefined) return false
+  const pieceInfo = context.lookup(pieceInfoRaw)
+  return pieceInfo instanceof PDFDict && pieceInfoMarksWatermark(pieceInfo, context)
+}
+
+/**
+ * Whether one `BDC` operand run opens an `/Artifact` whose `/Subtype` is
+ * `/Watermark`.
+ *
+ * The properties dictionary may be written inline
+ * (`/Artifact<</Subtype/Watermark/Type/Pagination>> BDC`) or as an indirect
+ * reference (`/Artifact 12 0 R BDC`). The indirect form is resolved through the
+ * document context; if it cannot be resolved the answer is "no", never a guess.
+ */
+function artifactWatermarkOperands(operands: readonly Token[], context: ContextLike): boolean {
+  const tag = operands.find(token => token.kind === 'name' && token.raw === '/Artifact')
+  if (tag === undefined) return false
+
+  const dictToken = operands.find(token => token.kind === 'dict')
+  if (dictToken !== undefined) {
+    // `tokenize` returns a whole `<< … >>` as ONE dict token, so the braces are
+    // stripped before reading the keys. `/Subtype` and `/Watermark` may be
+    // separated by any whitespace and either may sit next to other keys, so
+    // match the adjacent name TOKENS.
+    const inner = dictToken.raw.startsWith('<<') && dictToken.raw.endsWith('>>')
+      ? dictToken.raw.slice(2, -2)
+      : dictToken.raw
+    const names = tokenize(inner).filter(token => token.kind === 'name')
+    for (let i = 0; i < names.length - 1; i += 1) {
+      if (names[i].raw === '/Subtype' && names[i + 1].raw === '/Watermark') return true
+    }
+    return false
+  }
+
+  // Indirect form. The tokeniser classifies `R` as an unknown operator, which is
+  // why `artifactWrappedNames` keeps it in the operand run.
+  const refIndex = operands.findIndex(token => token.kind === 'operator' && token.raw === 'R')
+  if (refIndex < 2) return false
+  const objectNumber = operands[refIndex - 2]
+  const generationNumber = operands[refIndex - 1]
+  if (objectNumber.kind !== 'number' || generationNumber.kind !== 'number') return false
+  const target = context.lookup(PDFRef.of(Number(objectNumber.raw), Number(generationNumber.raw)))
+  if (!(target instanceof PDFDict)) return false
+  const subtype = context.lookup(target.get(PDFName.of('Subtype')))
+  return subtype instanceof PDFName && subtype.asString() === '/Watermark'
+}
+
+/**
+ * Resource names whose `Do` sits inside an `/Artifact … /Watermark … BDC … EMC`
+ * block, read straight from the page content stream.
+ *
+ * This is a generic signal — the page itself declares the invocation to be a
+ * watermark artifact — and it is what makes an Adobe mark detectable even when
+ * its XObject carries no name of ours and its body is a single `Tj`.
+ */
+function artifactWrappedNames(text: string, context: ContextLike): Set<string> {
+  const names = new Set<string>()
+  const open: boolean[] = []
+  let operands: Token[] = []
+  for (const token of tokenize(text)) {
+    // `R` is the indirect-reference operator, not a content operator: leaving it
+    // in the operand run is what makes `/Artifact 12 0 R BDC` resolvable.
+    if (token.kind !== 'operator' || token.raw === 'R') {
+      operands.push(token)
+      continue
+    }
+    if (token.raw === 'BDC' || token.raw === 'BMC') {
+      open.push(token.raw === 'BDC' && artifactWatermarkOperands(operands, context))
+    } else if (token.raw === 'EMC') {
+      open.pop()
+    } else if (token.raw === 'Do' && open[open.length - 1] === true) {
+      const name = operands.filter(token2 => token2.kind === 'name').pop()
+      if (name !== undefined) names.add(name.raw.replace(/^\//, ''))
+    }
+    operands = []
+  }
+  return names
+}
+
+/**
  * Locate likely watermarks.
  *
  * ## Detection strategy, and its honest limits
  *
- * Two signals are used, in decreasing order of reliability:
+ * Four signals are used, in decreasing order of reliability:
  *
- * 1. **A Form XObject invocation.** A page that paints an XObject is worth
- *    inspecting, and a name that says "watermark" is conclusive. An unnamed
- *    XObject is judged by its body: a mark typically contains no `TJ` text of
- *    its own beyond a short string, and is invoked with low constant alpha.
- * 2. **Rotated inline text.** A rotation is rare in body copy and near-universal
+ * 1. **A Form XObject invocation with a self-declared identity.** A name of ours
+ *    (`/Name` containing `WATERMARK_MARKER`) is conclusive, and so is Acrobat's
+ *    own `/PieceInfo << /ADBE_CompoundType << /Private /Watermark >> >>`, which
+ *    is how Adobe-style marks identify themselves.
+ * 2. **An `/Artifact` wrapper in the page content stream.** A `Do` inside
+ *    `/Artifact << … /Subtype /Watermark … >> BDC … EMC` is declared decoration
+ *    by the file itself — a structural signal that does not depend on how many
+ *    operators the target happens to contain.
+ * 3. **An unnamed XObject with a mark-like body.** Judged by constant alpha plus
+ *    at least one drawing operator, at a low confidence only, because an
+ *    ordinary illustration can have the same shape.
+ * 4. **Rotated inline text.** A rotation is rare in body copy and near-universal
  *    in diagonal watermarks, so a text block drawn under a non-trivial `cm`
  *    rotation is reported — at a lower confidence, because a rotated heading is
  *    also a legitimate design.
@@ -938,6 +1065,7 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
 
     // ── 1. XObject invocations ─────────────────────────────────────────────
     const invoked = new Map<string, number>()
+    const artifactWrapped = new Set<string>()
     for (const stream of streams) {
       const operations = parseOperations(tokenize(stream.text))
       for (const op of operations) {
@@ -946,6 +1074,9 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
         if (name === undefined) continue
         const key = name.raw.replace(/^\//, '')
         invoked.set(key, (invoked.get(key) ?? 0) + 1)
+      }
+      for (const name of artifactWrappedNames(stream.text, doc.context as never)) {
+        artifactWrapped.add(name)
       }
     }
 
@@ -976,12 +1107,40 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
         continue
       }
 
+      if (hasAdobeWatermarkPieceInfo(dict, doc.context as never)) {
+        candidates.push({
+          page: pageNumber,
+          kind: 'xobject',
+          reason: 'adobe-watermark',
+          confidence: 1,
+          xobjectName: name,
+          detail: `该 Form XObject 的 /PieceInfo 带 ADBE_CompoundType /Private /Watermark 标识，`
+            + `属于 Acrobat 系水印对象（页面通过 /${name} 调用，出现 ${count} 次）`,
+        })
+        continue
+      }
+
+      if (artifactWrapped.has(name)) {
+        candidates.push({
+          page: pageNumber,
+          kind: 'xobject',
+          reason: 'artifact-wrapper',
+          confidence: 1,
+          xobjectName: name,
+          detail: `该 XObject 由 /Artifact<</Subtype/Watermark>> … BDC … EMC 包裹绘制，`
+            + `是文件自述的装饰对象（页面通过 /${name} 调用，出现 ${count} 次）`,
+        })
+        continue
+      }
+
       // An unnamed XObject is judged on its body. A mark is small, uses a
-      // constant alpha, and holds little or no text of its own.
+      // constant alpha, and draws at least one operator (a single short `Tj` is
+      // quite enough — Acrobat writes exactly that).
       const hasAlpha = /\/[A-Za-z0-9]+ gs/.test(body)
       const textOps = (body.match(/Tj|TJ/g) ?? []).length
       const pathOps = (body.match(/\bre\b|\bf\b|\bS\b/g) ?? []).length
-      const looksLikeMark = hasAlpha && textOps + pathOps > 1 && body.length < 20000
+
+      const looksLikeMark = hasAlpha && textOps + pathOps >= 1 && body.length < 20000
       if (looksLikeMark) {
         candidates.push({
           page: pageNumber,
@@ -989,7 +1148,7 @@ export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> 
           reason: 'invisible-xobject',
           confidence: 0.45,
           xobjectName: name,
-          detail: `页面调用了未命名的 Form XObject /${name}，其内容含常透明度与少量绘制算子，可能是水印（需人工确认）`,
+          detail: `页面调用了未命名的 Form XObject /${name}，其内容含常透明度与至少一个绘制算子，可能是水印（需人工确认）`,
         })
       }
     }

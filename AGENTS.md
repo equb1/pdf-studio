@@ -32,6 +32,8 @@
 | `/api/pdf-studio/plans`、`.../{planId}/confirm`、`.../{planId}/cancel`、loopback 信任栅栏 | `src/host/routes.ts`、`src/host/http.ts` |
 | 两端注入（**仅 `surface: true` 时**：行表 + `tapIndex` 兜底 + 绝对 `apiBase`；`surface` 默认 false，页面默认无浮层）、`requireConfirmation` / `DSH_PDF_STUDIO_CONFIRM`（只管确认策略） | `src/index.ts` |
 | 浮层「待确认操作」卡片、3 秒轮询、`window.__dshPdfStudioStop()`（浮层可选；确认主路径是纯文本确认单） | `public/app.js` |
+| 页级装配的几何与判定：页面框继承（`/MediaBox`/`/CropBox`/`/Rotate`/`/UserUnit` 沿页树向上找）、可见区域 = CropBox ∩ MediaBox、2-up 判定（`/Rotate` 为 0 且长宽比 ≥ 1.25，与纸张尺寸无关）、拆分的页面框改写 + 内容流平移（不栅格化）、`keep` 只留一半、中缝检测（内容框间隔 ≥ 8pt、偏离中线 > 15% 回退、`MIN_CONTENT_LINE_RATIO`）、裁剪只裁不缩与 trim 的 uniform 并集、页序解析、合并的来源回报 | `src/core/page-assembly.ts` |
+| `pdf_split` / `pdf_crop` / `pdf_arrange` / `pdf_merge` 的参数、默认值与 `authorize({...})` 调用点（四个工具一律 destructive，见 `PAGE_ASSEMBLY_TOOLS`） | `src/host/tools.ts`、`src/core/confirmation.ts` |
 
 改了上面任何一处，请同步 `README.md` 的「执行前确认」与「怎么验证」两节，以及 `docs/PROMPTING.md`
 的「意图 → 工具 → 关键参数」表与模板。
@@ -40,13 +42,14 @@
 `apply()` 只在启动时跑一次，开了 `surface: true` 时桌面端的注入行表更是启动时一次性收集）。
 只有 `surface: true` 时才需要在改完 `public/app.js` 后刷新页面；默认不注入时页面根本不加载它。
 
-提交前跑 `npm test` 即可——确认机制的三份套件已经接进 test 链
-（`test:confirm-ui`、`test:plugin-wiring`、`test:confirmation`）。只想单跑其中一套时：
+提交前跑 `npm test` 即可——确认机制的三份套件与页级装配套件都已接进 test 链
+（`test:confirm-ui`、`test:plugin-wiring`、`test:confirmation`、`test:page-assembly`）。只想单跑其中一套时：
 
 ```sh
 npm run test:confirmation   # 门控判定 / planId 强校验 / 计划库 / /plans 路由
 npm run test:confirm-ui     # 浮层卡片（浮层可选开启）
 npm run test:plugin-wiring  # 工具注册 + 注入（默认关闭 / surface:true）+ 策略透传
 npm run test:line-redraw    # 整行重绘：几何换算 / 抹除 / 不重叠 / 确认令牌 / 错误路径
+npm run test:page-assembly  # 页级装配：拆分 / 裁剪 / 重排 / 合并（含真实 canvas 回拼比对）
 ```
 

@@ -134,11 +134,12 @@ const toolSets = {
 const GATED_TOOLS = [
   'pdf_inspect', 'pdf_extract_text', 'pdf_make_searchable',
   'pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect',
+  'pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge',
 ]
 for (const [policy, tools] of Object.entries(toolSets)) {
   const names = tools.map(tool => tool.name)
-  check(`工具集 ${policy} 暴露 8 个工具`, tools.length === 8, names.join(', '))
-  // 会写盘或代价高的 7 个工具都必须声明 plan/confirm/force：这是"写盘前过 authorize"的入口。
+  check(`工具集 ${policy} 暴露 12 个工具`, tools.length === 12, names.join(', '))
+  // 会写盘或代价高的 11 个工具都必须声明 plan/confirm/force：这是"写盘前过 authorize"的入口。
   // pdf_preview 是纯只读渲染，没有闸门参数（也没有任何写盘路径），所以不在这一组里。
   for (const name of GATED_TOOLS) {
     const definition = tools.find(tool => tool.name === name)

@@ -111,6 +111,13 @@ export interface GateInput {
   candidates?: string[]
   /** 工具自己发现的歧义（例如"这一页没有文字层，需要先 OCR"）。 */
   notes?: string[]
+  /**
+   * 工具已经判定"这次不能做"的中文原因（例如拆分的候选页全是不规范页）。
+   *
+   * 与 `notes`（歧义 → 出确认单等人确认）不同：这里的原因意味着**即使确认也不能做**，
+   * 所以 `authorize()` 直接走 `refused`，绝不落盘。
+   */
+  refusals?: string[]
 }
 
 /** 判定结果。 */
@@ -173,6 +180,15 @@ const OCR_WHOLE_DOC_PAGES = 20
 const SEARCHABLE_PAGES = 20
 const HUGE_DOCUMENT_PAGES = 200
 
+/**
+ * 页级装配工具集：永远归 destructive。
+ *
+ * 这四个工具的输出与源文件是"另一份文件"，看起来不如改写正文危险，但它们改的是
+ * 页面结构、页序与几何，出错时用户拿到的是一份"看起来对、其实错了"的文件——
+ * 那比直接报错更难发现。所以无条件要求确认。
+ */
+const PAGE_ASSEMBLY_TOOLS = new Set(['pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge'])
+
 /** 三类门控的判定。 */
 export function classifyGate(input: GateInput): GateDecision {
   const reasons: string[] = []
@@ -190,6 +206,11 @@ export function classifyGate(input: GateInput): GateDecision {
   if (input.tool === 'pdf_watermark' && input.action === 'remove') mark('移除水印会改写页面内容流')
   if (input.tool === 'pdf_protect' && (input.action === 'encrypt' || input.action === 'decrypt')) {
     mark(input.action === 'encrypt' ? '加密会改变文件的打开方式' : '解除加密会改变文件的保护状态')
+  }
+  // 页级装配（拆 2-up / 裁剪 / 重排 / 合并）一律归 destructive：它们改的是页面的
+  // 结构、顺序或几何，输出文件一旦落地就没有"撤销"这一说。
+  if (PAGE_ASSEMBLY_TOOLS.has(input.tool)) {
+    mark(`${titleFor(input.tool, input.action)}会改写页面结构/顺序/几何，属于不可逆操作`)
   }
   if (exists) mark(`输出文件已存在，将被覆盖：${input.output}`)
 
@@ -269,6 +290,10 @@ function titleFor(tool: string, action: string): string {
   if (tool === 'pdf_inspect') return action === 'analyze' ? '深度分析（含 OCR）' : '检查文档'
   if (tool === 'pdf_extract_text') return '提取文字'
   if (tool === 'pdf_preview') return '渲染预览'
+  if (tool === 'pdf_split') return '拆分 2-up 页面'
+  if (tool === 'pdf_crop') return '裁剪页面'
+  if (tool === 'pdf_arrange') return '重排页面'
+  if (tool === 'pdf_merge') return '合并文档'
   return tool
 }
 
@@ -515,6 +540,17 @@ export function authorize(input: AuthorizeInput): AuthorizeResult {
 
   const now = input.now ?? Date.now()
   const plan = createPlan(input)
+
+  // 工具已判定"这次做不了"（例如拆分的候选页全是不规范页）：直接拒绝，不落盘，也不发计划。
+  // 这类原因**不是**让用户确认就能继续的，所以不走 plan 通道。
+  const refusals = input.refusals ?? []
+  if (refusals.length > 0) {
+    return {
+      kind: 'refused',
+      message: `无法执行：\n${refusals.map(reason => `  • ${reason}`).join('\n')}`,
+      plan,
+    }
+  }
 
   // 歧义里"必须靠猜"的情况直接判错：猜错文件名比多问一句危险得多。
   const hardAmbiguity = (input.candidates ?? []).length > 1

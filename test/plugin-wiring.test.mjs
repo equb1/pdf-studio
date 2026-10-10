@@ -126,9 +126,10 @@ const sample = join(workspace, 'wiring.pdf')
     on: harness.ctx.on,
     effect: harness.ctx.effect,
   })
-  check('8 个工具全部注册', registered.length === 8, registered.map(item => item.name).join(', '))
+  check('12 个工具全部注册', registered.length === 12, registered.map(item => item.name).join(', '))
   check('写盘类工具带 confirm 参数',
-    ['pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_make_searchable'].every(name =>
+    ['pdf_edit_text', 'pdf_replace_line', 'pdf_watermark', 'pdf_protect', 'pdf_make_searchable',
+      'pdf_split', 'pdf_crop', 'pdf_arrange', 'pdf_merge'].every(name =>
       Object.keys(registered.find(item => item.name === name)?.parameters?.properties ?? {}).includes('confirm')))
 
   // 策略 always：连只读的水印扫描之外的写操作都要确认，且未确认时不落盘。
