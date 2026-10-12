@@ -180,5 +180,53 @@ check('夹具：删除前能提取到密文', beforeText.includes('SECRET'), bef
 }
 
 rmSync(WORK, { recursive: true, force: true })
+
+// ── 回归：大 CTM 缩放的水印不能连带删掉邻近正文行 ─────────────────────────
+// 真实案例：某试卷答案页的水印是「小字号 + 放大十几倍的 CTM」画的，旧实现把
+// `size × scale` 当作基线容差（可达几十 pt），于是把 25pt 外的正文行一起抹掉了；
+// 另有一次把整页白底矩形当"命中路径"删掉，渲染出黑带。这两点都在这里钉住。
+{
+  const { PDFDocument, StandardFonts, PDFOperator, PDFOperatorNames } = await import('pdf-lib')
+  const { openPdfBytes } = await import('../src/core/pdf.ts')
+  const { extractTextLayer } = await import('../src/core/text-layer.ts')
+  const { redactPages, detachedSafeCopy } = await import('../src/core/redact.ts')
+
+  const doc = await PDFDocument.create()
+  const page = doc.addPage([595, 842])
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  // 正文行（必须活下来）
+  page.drawText('CONTENT LINE MUST SURVIVE', { x: 60, y: 78, size: 12, font })
+  // 水印：小字号 + 14 倍 CTM 缩放（复现真实文件的做法）
+  const n = value => doc.context.obj(value)   // 操作数必须是 PDFObject（裸数字会把流写坏）
+  page.pushOperators(
+    PDFOperator.of(PDFOperatorNames.PushGraphicsState),
+    PDFOperator.of(PDFOperatorNames.ConcatTransformationMatrix, [n(14), n(0), n(0), n(14), n(40), n(40)]),
+  )
+  page.drawText('zxxk.com watermark', { x: 0, y: 0, size: 1.5, font })
+  page.pushOperators(PDFOperator.of(PDFOperatorNames.PopGraphicsState))
+  const bytes = detachedSafeCopy(await doc.save())
+
+  const probe = await openPdfBytes(detachedSafeCopy(bytes))
+  const lines = await extractTextLayer(probe, 1)
+  const content = lines.find(line => line.text.includes('CONTENT'))
+  const mark = lines.find(line => line.text.includes('zxxk'))
+  check('夹具：正文行与水印行都被文字层读到', content !== undefined && mark !== undefined,
+    lines.map(line => line.text.trim()).filter(Boolean).join(' | ').slice(0, 80))
+
+  const result = await redactPages(bytes, {
+    boxes: [{ page: 1, x: mark.rect.x, y: mark.rect.y, width: mark.rect.width, height: mark.rect.height }],
+    targetsByPage: new Map([[1, [mark.text.trim()]]]),
+    targetLinesByPage: new Map([[1, [mark.rect]]]),
+    color: '#ffffff',
+  })
+  const after = await openPdfBytes(detachedSafeCopy(result.bytes))
+  const afterLines = (await extractTextLayer(after, 1)).map(line => line.text.trim())
+  check('大 CTM 水印被删掉了', !afterLines.some(text => text.includes('zxxk')), afterLines.join(' | ').slice(0, 80))
+  check('**邻近正文行活下来了**（旧实现会连带删掉它）',
+    afterLines.some(text => text.includes('CONTENT')), afterLines.join(' | ').slice(0, 80))
+  check('没有删任何矢量路径（防止把整页白底矩形删掉、渲染出黑带）',
+    result.report.removedPaths === 0, String(result.report.removedPaths))
+}
+
 console.log(`\n${failed === 0 ? 'ALL PDF-REDACT CHECKS PASSED（单段流 + 多段流文本页；图片/扫描页按纪律不做）' : `${failed} check(s) FAILED`}`)
 if (failed > 0) process.exitCode = 1

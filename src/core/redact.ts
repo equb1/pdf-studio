@@ -11,8 +11,11 @@
  *
  * - **扫描件（整页图片）里的内容不做修补**：图片像素在 XObject 里，真删需要重画像素或栅格化整页。
  *   本工具会识别出这类页并在结果里**如实说明**，只做视觉遮盖，让人自己决定要不要发布。
- * - **矢量图形按整条路径判定**：命中的矩形路径（`re`）整条删除，可能连带删掉同一路径里伸到框外的部分
- *   （宁可多删不放过；结果里会报告删了多少条指令）。
+ * - **矢量图形按整条路径判定，但有两条限制**：只删"与目标行相交"的矩形路径，且跳过面积 ≥ 页面 40% 的
+ *   大矩形（页面白底/整页底色就是这种，删了会让画布露出未绘制区域、渲染成黑带）。结果里会报告删了多少条。
+ * - **文字命中用"行带"判定**（基线落在目标行垂直带内 + 水平重叠），不用距离容差——水印常是
+ *   "小字号 + 大 CTM 缩放"，容差会按缩放放大到几十 pt 而误伤邻近正文行（实测 + 回归测试在案）。
+ * - **写盘前复核**：重新提取受影响页的文字，只要**目标之外的行少了一行就拒绝输出**。
  * - 改流的方式是**字节级替换**（把命中的字符串操作数换成空串），不重新序列化整条流——
  *   真文件的内容流里可能有内联图片等二进制片段，token 往返会破坏它们（实测整页渲染变暗）。
  * - 字体子集里残留的字形轮廓不清理（提取不出文字，但高级取证仍可能还原轮廓）——要更强保证，
@@ -25,6 +28,8 @@ import { locateShowText, parseOperations, showStrings, tokenize, type Operation 
 import { listReadableRuns, readPageContentStreams } from './text-editor.ts'
 import { readPageFonts } from './font-map.ts'
 import { finalGraphicsState, IDENTITY_MATRIX, matrixXScale, multiplyMatrices, trackGraphicsState } from './line-redraw.ts'
+import { openPdfBytes } from './pdf.ts'
+import { extractTextLayer } from './text-layer.ts'
 
 /** 一个待删除的矩形（页面坐标，pt，原点左下）。 */
 export interface RedactBox {
@@ -169,6 +174,17 @@ export async function redactPages(
     byPage.set(box.page, list)
   }
 
+  // 复核用的"删除前文字快照"：只取本次要动的页（其它页不受影响，没必要解析）。
+  // 写盘前会用它做"其它行一个都不能少"的最后检查——见函数末尾。
+  const beforeLinesByPage = new Map<number, readonly string[]>()
+  try {
+    const probe = await openPdfBytes(detachedSafeCopy(bytes))
+    for (const pageNumber of byPage.keys()) {
+      const lines = await extractTextLayer(probe, pageNumber)
+      beforeLinesByPage.set(pageNumber, lines.map(line => line.text))
+    }
+  } catch { /* 提取不了就不做复核：宁可少一道检查，也不要因为复核失败而阻断正常删除 */ }
+
   const pages = doc.getPages()
   for (const [pageNumber, boxes] of byPage) {
     const page = pages[pageNumber - 1]
@@ -199,19 +215,32 @@ export async function redactPages(
       const shows = locateShowText(operations)
       if (shows.length > 0) sawText = true
       const drop = new Set<number>()
-      // ① 内容匹配（字体有 ToUnicode 时最准）
+      const states = trackGraphicsState(operations)
+      // ① 内容匹配（字体有 ToUnicode 时最准）——但**必须再用几何确认一次**。
+      // 只按"文字包含"匹配会被短片段坑到：真文件里别处一个单字/短串恰好是目标串的子串，
+      // 就会被一起抹掉（实测：删答案页水印时连带删掉了相邻一行答案）。
       for (const run of runs) {
         if (run.streamIndex !== stream.index) continue
         const text = run.text?.trim() ?? ''
         if (text.length === 0) continue
-        if (targets.some(target => target.includes(text))) drop.add(run.operationIndex)
+        if (!targets.some(target => target.includes(text))) continue
+        if (targetLines.length === 0) { drop.add(run.operationIndex); continue }
+        // 与 show 路径同样的换算：run 的 x/y 是文本空间，要乘 `ctm` 才落到页面空间
+        const runState = states.get(run.operationIndex)
+        const runTotal = multiplyMatrices(carryCtm, runState?.ctm ?? IDENTITY_MATRIX)
+        const runX = runTotal.a * run.x + runTotal.c * run.y + runTotal.e
+        const runY = runTotal.b * run.x + runTotal.d * run.y + runTotal.f
+        // 与 show 同规则：基线必须在目标行的垂直带内、且水平有重叠
+        const inTargetLine = targetLines.some(line =>
+          runY >= line.y - 2 && runY <= line.y + line.height + 2
+          && runX >= line.x - 1 && runX <= line.x + line.width + 1)
+        if (inTargetLine) drop.add(run.operationIndex)
       }
       // ② 几何匹配：**只在"框内目标行"里找**，其余行永不参与（构造上排除误删）。
       //
       // 关键：指令的 `x/y` 是**文本空间**坐标，而文字层的行矩形是**页面空间**坐标。
       // 中间隔着 `tm × ctm`（`resize` 这类前插 `cm` 的页面尤其明显：文本 y=300 在页面上是 540）。
       // 所以必须用 `trackGraphicsState` 给出的 `trm` 把指令原点映射到页面空间再比。
-      const states = trackGraphicsState(operations)
       for (const show of shows) {
         const size = show.fontSize ?? 10
         const state = states.get(show.index)
@@ -224,14 +253,14 @@ export async function redactPages(
         const showLeft = originX
         const showRight = originX + estimateWidth(operations[show.index], size) * scale
         for (const line of targetLines) {
-          const lineTop = line.y + line.height
-          const showRect = { x: showLeft, y: originY - size * 0.25 * scale, width: showRight - showLeft, height: size * 1.25 * scale }
-          // 容差放宽到**一整行高**：不同生成器把基线放在行内不同位置（顶、底、居中），
-          // 收紧会漏删、放宽只会多删——多删由工具层"框外行变少就拒绝"兜底。
-          const baselineAligned = Math.abs(originY - lineTop) <= Math.max(line.height, size * 1.2 * scale)
-          // 两种都认：基线≈行顶（实测该文件是这种），或指令矩形与该行相交（pdf-lib 生成的
-          // 夹具是这种，基线在行内偏下）。候选**只限目标行**，所以不会碰到框外正文。
-          if (baselineAligned || intersects(showRect, { x: line.x, y: line.y, width: line.width, height: line.height })) {
+          // **判定规则：基线落在该行的垂直带内（±2pt）且水平与该行有重叠。**
+          // 这里刻意不用"距离容差"：水印常是"小字号 + 放大十几倍的 CTM"，
+          // 按 `size × scale` 算出来的容差会有几十 pt，把邻近正文行一起圈进来
+          // （实测：删答案页水印把 25pt 外的一行答案也删了；回归夹具复现了同一现象）。
+          // 行内基线位置差异（顶/底/居中）本来就落在行带内，用行带表达既准确又不受缩放影响。
+          const inBand = originY >= line.y - 2 && originY <= line.y + line.height + 2
+          const overlapsX = showRight >= line.x - 1 && showLeft <= line.x + line.width + 1
+          if (inBand && overlapsX) {
             drop.add(show.index)
             break
           }
@@ -243,7 +272,12 @@ export async function redactPages(
         const numbers = operation.operands.filter(token => token.kind === 'number').map(token => Number(token.raw))
         if (numbers.length < 4) continue
         const rect = { x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3] }
-        if (boxes.some(box => intersects(rect, box))) {
+        // 只删**与目标行相交**的路径，且跳过"大面积矩形"：页面白底/整页底色就是这种，
+        // 它跟水印无关，删了会让画布露出未绘制区域（实测渲染出黑带）。
+        const pageArea = page.getWidth() * page.getHeight()
+        if (rect.width * rect.height >= pageArea * 0.4) continue
+        const hitsTargetLine = targetLines.some(line => intersects(rect, { x: line.x, y: line.y, width: line.width, height: line.height }))
+        if (hitsTargetLine && boxes.some(box => intersects(rect, box))) {
           drop.add(operations.indexOf(operation))
         }
       }
@@ -339,8 +373,35 @@ export async function redactPages(
 
   report.imageOnlyPages = [...new Set(report.imageOnlyPages)].sort((a, b) => a - b)
   report.imagePages = [...new Set(report.imagePages)].sort((a, b) => a - b)
-  return { bytes: detachedSafeCopy(await doc.save()), report }
+  const outBytes = detachedSafeCopy(await doc.save())
+
+  // **写盘前的最后一道护栏**：重新提取受影响页的文字，确认"目标之外的行一行都没少"。
+  // 这道检查以前只在工具层做，直接调用 core 的路径就绕过了它——而"组内连带 / 短片段误伤"
+  // 正是那种会在工具层被拦下、在 core 层悄悄改坏文件的失败（实测踩过：水印与邻行同组时，
+  // 邻行被一起抹掉，还有一次删掉整页白底矩形导致渲染出黑带）。宁可拒绝输出，也不交出坏文件。
+  if (report.removedShows > 0 && beforeLinesByPage.size > 0) {
+    const after = await openPdfBytes(detachedSafeCopy(outBytes)).catch(() => undefined)
+    if (after !== undefined) {
+      for (const [pageNumber, beforeLines] of beforeLinesByPage) {
+        const afterLines = (await extractTextLayer(after, pageNumber).catch(() => [])).map(line => line.text.trim())
+        const afterSet = new Set(afterLines)
+        const targetTexts = options.targetsByPage?.get(pageNumber) ?? []
+        const lost = beforeLines
+          .map(text => text.trim())
+          .filter(text => text.length > 0 && !afterSet.has(text))
+          .filter(text => !targetTexts.some(target => text.includes(target.trim()) || target.trim().includes(text)))
+        if (lost.length > 0) {
+          throw new Error(
+            `拒绝输出：这次删除会连带抹掉第 ${pageNumber} 页的其它文字（例如「${lost[0].slice(0, 30)}」）。`
+            + '多半是目标文字与它处在同一个绘制组里；请把框收得更准，或把这个例子报告给插件维护者。',
+          )
+        }
+      }
+    }
+  }
+  return { bytes: outBytes, report }
 }
+
 
 /**
  * 把字节拷到**独立 ArrayBuffer**里。
