@@ -36,7 +36,9 @@ import {
   PendingInputs,
   TaskQueue,
   auditTaskOutput,
-  formatAttachmentReceivedMessage,
+  expandPreset,
+  extractText,
+  formatAttachmentAck,
   formatBusyMessage,
   isAllowedSender,
   isAttachmentType,
@@ -389,6 +391,18 @@ export function createBridge(config, deps = {}) {
   const handleMessage = message => {
     const outcome = parseInstruction(message, config, now())
     if (!outcome.ok) {
+      // **看不懂的指令要回一句话**，别静默丢掉：实测用户发 `/全处理 命名为…`（当时不支持带参数）
+      // 被静默丢弃，看起来就像"机器人没反应"。只在"像是要下指令"时回（以 / 开头），不打扰闲聊。
+      const rawText = extractText(message.content) ?? ''
+      const looksLikeCommand = /^\//.test(String(rawText).trim().replace(/^(?:@[^\s]+\s+)+/u, ''))
+      if (outcome.reason.includes('没有以') && looksLikeCommand && isAllowedSender(message, config) && isTargetChat(message, config)) {
+        const names = Object.keys(config.presets ?? {})
+        const presetHint = names.length > 0 ? `，或直接用预设名 ${names.map(name => `/${name}`).join(' / ')}（名字后面可以带要求）` : ''
+        void lark.sendText(
+          `❓ 没看懂这条指令：请以 ${config.prefix} 开头${presetHint}。\n例如：${config.prefix} 给它加页码；或 /全处理 命名为「XX试卷」和「XX答案」`,
+          `${String(message.message_id)}-hint`,
+        ).catch(() => {})
+      }
       // 只记日志、不回消息：避免把"没通过白名单"变成骚扰，也避免泄露白名单规则。
       // 但**机器人自己发的回执**会被轮询到、必然不在白名单里——这类不写日志，
       // 否则常驻服务的日志会被自己刷爆（实测 10 分钟 1800 行）。
@@ -398,6 +412,12 @@ export function createBridge(config, deps = {}) {
       return 'ignored'
     }
     if (ledger.has(outcome.instruction.messageId)) return 'duplicate'
+    // 预设展开：/水印、/pdf 拆分、或直接写预设名 → 换成整条指令
+    const expanded = expandPreset(outcome.instruction.text, config.presets, { prefix: config.prefix })
+    if (expanded.preset !== undefined) {
+      logger(`预设命中「${expanded.preset}」：${expanded.text.slice(0, 80)}…`)
+      outcome.instruction.text = expanded.text
+    }
     // 背压：队列满了就**明确回执拒收**（比静默堆积好——用户知道要等一下）
     if (config.maxQueueLength > 0 && queue.size >= config.maxQueueLength) {
       ledger.mark(outcome.instruction.messageId, 'rejected-busy', now())
@@ -412,6 +432,15 @@ export function createBridge(config, deps = {}) {
     // 把"刚发来的附件"取出来带进这次任务（两段式用法：先发文件，再发指令）
     const senderId = typeof message.sender?.id === 'string' ? message.sender.id : ''
     const inputs = pending.take(config.chatId, senderId, now(), config.inputTtlMs).map(entry => entry.path)
+    // 预设是"对刚发来的文件做事"：没有输入文件、消息里也没写路径时，直接提示，别白跑一次 agent
+    if (expanded.preset !== undefined && inputs.length === 0 && !/[\/~]|\.pdf/i.test(outcome.instruction.text)) {
+      logger(`预设「${expanded.preset}」触发但没有输入文件，已提示用户先发文件`)
+      void lark.sendText(
+        `📎 还没收到文件：先把文件发给我，再回 /${expanded.preset}（或 ${config.prefix} 指令）。`,
+        `${outcome.instruction.messageId}-needfile`,
+      ).catch(() => {})
+      return 'ignored'
+    }
     if (inputs.length > 0) logger(`本次任务带 ${inputs.length} 个输入文件：${inputs.join('、')}`)
     void queue.enqueue({ instruction: outcome.instruction, inputs }).then(persist, error => logger(`任务异常：${String(error)}`))
     // **立刻回一条"已收到"**：任务常常要跑 1~3 分钟，只在结束时回执会让人以为没反应（实测被问过）。
@@ -473,7 +502,30 @@ export function createBridge(config, deps = {}) {
       const name = landed.split('/').pop() ?? wanted
       pending.remember({ chatId: config.chatId, senderId: String(message.sender?.id ?? ''), path: landed, name, at: now() })
       persist()
-      await lark.sendText(formatAttachmentReceivedMessage(name, Math.round(config.inputTtlMs / 60000)), `${messageId}-ack`)
+      await lark.sendText(
+        formatAttachmentAck(name, Math.round(config.inputTtlMs / 60000), Object.keys(config.presets)),
+        `${messageId}-ack`,
+      )
+      // 配了默认预设就起一个"等一会儿没人下指令就自动跑"的定时器（unref：别拖着进程不退出）
+      const presetInstruction = config.defaultPreset === '' ? undefined : config.presets[config.defaultPreset]
+      if (presetInstruction !== undefined && config.autoPresetDelayMs > 0) {
+        const senderId = String(message.sender?.id ?? '')
+        const timer = setTimeout(() => {
+          const taken = pending.take(config.chatId, senderId, now(), config.inputTtlMs)
+          if (taken.length === 0) return            // 用户已经自己下了指令，别重复跑
+          const autoId = `auto-${String(now())}-${messageId}`
+          if (ledger.has(autoId)) return
+          ledger.mark(autoId, 'queued', now())
+          persist()
+          logger(`文件已到 ${Math.round(config.autoPresetDelayMs / 1000)}s 且没人下指令 → 按预设「${config.defaultPreset}」自动处理`)
+          void lark.sendText(`⏳ 没收到指令，按预设「${config.defaultPreset}」开始处理，大约 1~3 分钟。`, `${messageId}-autoack`).catch(() => {})
+          void queue.enqueue({
+            instruction: { messageId: autoId, chatId: config.chatId, text: presetInstruction },
+            inputs: taken.map(entry => entry.path),
+          }).then(persist, error => logger(`自动任务异常：${String(error)}`))
+        }, config.autoPresetDelayMs)
+        timer.unref?.()
+      }
       logger(`已收下附件：${name}（${size} 字节）→ ${landed}`)
       return 'attachment'
     } catch (error) {
@@ -494,8 +546,14 @@ export function createBridge(config, deps = {}) {
     }
     let accepted = 0
     for (const message of messages) {
-      if (isAttachmentType(message.msg_type)) { await handleAttachment(message); continue }
-      if (handleMessage(message) === 'accepted') accepted += 1
+      // 逐条隔离：单条消息处理出错（比如某个字段形状没见过）只记日志，
+      // 绝不让异常穿透主循环——常驻服务不能被一条坏消息弄死（实测漏导入一个函数就会这样）。
+      try {
+        if (isAttachmentType(message.msg_type)) { await handleAttachment(message); continue }
+        if (handleMessage(message) === 'accepted') accepted += 1
+      } catch (error) {
+        logger(`处理消息失败（${String(message.message_id ?? '未知')}）：${String(error)}`)
+      }
     }
     ledger.prune(now(), 7 * 24 * 60 * 60 * 1000)
     return accepted
@@ -681,9 +739,13 @@ export async function main(argv = process.argv.slice(2)) {
       const source = startEventSource(config, {
         logger,
         onMessage: message => {
-          // 附件（文件/图片）与文本走不同处理：附件要先下载再等指令
-          if (isAttachmentType(message.msg_type)) { void handleAttachment(message); return }
-          if (handleMessage(message) === 'accepted') accepted += 1
+          // 附件（文件/图片）与文本走不同处理：附件要先下载再等指令；单条出错只记日志
+          try {
+            if (isAttachmentType(message.msg_type)) { void handleAttachment(message); return }
+            if (handleMessage(message) === 'accepted') accepted += 1
+          } catch (error) {
+            logger(`处理事件失败（${String(message.message_id ?? '未知')}）：${String(error)}`)
+          }
         },
         onExit: code => { if (!stopping && !args.once) logger(`事件消费已退出（exit ${code}），准备重启`) },
         ...(bounded ? { bounded: true } : {}),

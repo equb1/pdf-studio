@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Ledger } from '../scripts/phone-bridge/core.ts'
+import { Ledger, PendingInputs } from '../scripts/phone-bridge/core.ts'
 import {
   collectExpiredOutbox,
   createBridge,
@@ -321,7 +321,85 @@ try {
     check('dry-run 打印将执行的命令与提示词', logs.some(line => line.includes('[dry-run]') && line.includes('headless')), String(logs.length))
   }
 
-  // ── 9. 背压：队列满了明确拒收（而不是静默堆积） ─────────────────────────
+  // ── 8b. 预设任务：短名字展开成整条指令；文件到后没人下指令就自动跑默认预设 ────
+  {
+    const outbox = join(WORK, 'outbox-preset')
+    const prompts = []
+    const config = {
+      chatId: 'oc_x', allowedSenderIds: ['ou_me'], allowedSenderNames: [], prefix: '/pdf',
+      outboxDir: outbox, maxAgeMs: 1800000, maxInstructionChars: 200,
+      allowedExtensions: ['.pdf'], maxFileBytes: 1000, maxFilesPerTask: 2, maxQueueLength: 3,
+      statePath: join(WORK, 'state-preset.json'), dshPath: 'dsh', profile: 'headless', dshArgs: [],
+      timeoutMs: 1000, pollMs: 1000, identity: 'bot', readIdentity: 'user', larkCliPath: 'lark-cli',
+      inboxDir: join(outbox, 'inbox'), inputTtlMs: 60000, maxInputBytes: 100000, autoConfirm: true,
+      presets: { 水印: '【预设】删除全部水印并命名 基础名-去水印.pdf', 全处理: '【预设】删水印+拆分+重命名' },
+      defaultPreset: '全处理', autoPresetDelayMs: 80,
+    }
+    const sent = []
+    const makeLark = () => ({
+      listMessages: async () => [],
+      sendText: async text => { sent.push(text); return true },
+      sendFile: async () => true,
+      getMessage: async () => ({ content: '<file key="file_v3_x" name="期末数学.pdf"/>' }),
+      downloadResource: async ({ dir, name }) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), '%PDF-1.4 x'); return dir },
+    })
+    const runner = async (_command, argv) => { prompts.push(String(argv.at(-1))); return { code: 0, stdout: 'ok', stderr: '', timedOut: false } }
+
+    // ① 文件到 + 没人下指令 → 等 80ms 自动按默认预设跑
+    const bridge = createBridge(config, { logger: () => {}, ledger: new Ledger(), pending: new PendingInputs(), persist: () => {}, now: () => Date.now(), lark: makeLark(), runner })
+    await bridge.handleAttachment({ message_id: 'om_preset_file', chat_id: 'oc_x', msg_type: 'file', content: '期末数学.pdf', sender: { id: 'ou_me' }, create_time: String(Date.now()) })
+    check('附件回执里列出了可用预设', sent.some(text => text.includes('/水印') && text.includes('/全处理')), sent[0]?.split('\n').slice(0, 2).join(' / '))
+    await new Promise(resolveWait => setTimeout(resolveWait, 300))
+    check('没人下指令 → 自动按默认预设开跑（提示词里是展开后的整条指令）',
+      prompts.some(text => text.includes('【预设】删水印+拆分+重命名')), prompts.length + ' 次执行')
+    check('自动任务也把文件路径带进去了', prompts.some(text => text.includes('期末数学.pdf')), '')
+
+    // ② 用户先发了预设名 → 展开成整条指令；定时器到点**不能**重复跑
+    prompts.length = 0
+    const bridge2 = createBridge(config, { logger: () => {}, ledger: new Ledger(), pending: new PendingInputs(), persist: () => {}, now: () => Date.now(), lark: makeLark(), runner })
+    await bridge2.handleAttachment({ message_id: 'om_preset_file2', chat_id: 'oc_x', msg_type: 'file', content: '期末数学.pdf', sender: { id: 'ou_me' }, create_time: String(Date.now()) })
+    await bridge2.handleMessage({ message_id: 'om_preset_text', chat_id: 'oc_x', msg_type: 'text', content: JSON.stringify({ text: '/水印' }), sender: { id: 'ou_me' }, create_time: String(Date.now()) })
+    while (bridge2.queue.size > 0) await new Promise(resolveWait => setTimeout(resolveWait, 20))
+    await new Promise(resolveWait => setTimeout(resolveWait, 200))
+    check('/水印 被展开成整条预设指令', prompts.some(text => text.includes('【预设】删除全部水印')), prompts.join(' | ').slice(0, 80))
+    check('用户已下指令 → 定时器到点不重复跑（只执行一次）', prompts.length === 1, prompts.length + ' 次执行')
+  }
+
+  // ── 8c. 看不懂的指令 / 预设没收到文件 → 必须回一句提示（不能静默）──────────
+  {
+    const outbox = join(WORK, 'outbox-hint')
+    const sent = []
+    const prompts = []
+    const config = {
+      chatId: 'oc_x', allowedSenderIds: ['ou_me'], allowedSenderNames: [], prefix: '/pdf',
+      outboxDir: outbox, maxAgeMs: 1800000, maxInstructionChars: 200,
+      allowedExtensions: ['.pdf'], maxFileBytes: 1000, maxFilesPerTask: 2, maxQueueLength: 3,
+      statePath: join(WORK, 'state-hint.json'), dshPath: 'dsh', profile: 'headless', dshArgs: [],
+      timeoutMs: 1000, pollMs: 1000, identity: 'bot', readIdentity: 'user', larkCliPath: 'lark-cli',
+      inboxDir: join(outbox, 'inbox'), inputTtlMs: 60000, maxInputBytes: 100000, autoConfirm: true,
+      presets: { 全处理: '【预设】删水印+拆分+重命名' }, defaultPreset: '', autoPresetDelayMs: 60000,
+    }
+    const bridge = createBridge(config, {
+      logger: () => {}, ledger: new Ledger(), pending: new PendingInputs(), persist: () => {}, now: () => Date.now(),
+      lark: { listMessages: async () => [], sendText: async text => { sent.push(text); return true }, sendFile: async () => true },
+      runner: async (_command, argv) => { prompts.push(String(argv.at(-1))); return { code: 0, stdout: '', stderr: '', timedOut: false } },
+    })
+    const text = extra => ({ message_id: 'om_h_' + Math.random().toString(36).slice(2, 8), chat_id: 'oc_x', msg_type: 'text', content: JSON.stringify({ text: extra }), sender: { id: 'ou_me' }, create_time: String(Date.now()) })
+
+    bridge.handleMessage(text('/随手的斜杠词'))
+    check('看不懂的斜杠指令 → 回一句提示（不再静默丢弃）',
+      sent.some(t2 => t2.includes('没看懂这条指令') && t2.includes('/全处理')), sent.at(-1)?.slice(0, 60) ?? '')
+    const before = sent.length
+    bridge.handleMessage(text('这是普通聊天，没有斜杠'))
+    check('普通聊天不回提示（不打扰）', sent.length === before, String(sent.length - before))
+
+    bridge.handleMessage(text('/全处理'))
+    await new Promise(resolveWait => setTimeout(resolveWait, 50))
+    check('预设触发但没收到文件 → 提示先发文件，且**不白跑一次 agent**',
+      sent.some(t2 => t2.includes('还没收到文件')) && prompts.length === 0, `prompts=${prompts.length}`)
+  }
+
+  // ── 9. 背压：队列满了明确拒收（而不是静默堆积） ─────────────────────────  // ── 9. 背压：队列满了明确拒收（而不是静默堆积） ─────────────────────────
   {
     const config = {
       chatId: 'oc_x', allowedSenderIds: ['ou_me'], allowedSenderNames: [], prefix: '/pdf',

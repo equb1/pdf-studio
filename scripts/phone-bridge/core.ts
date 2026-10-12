@@ -113,6 +113,18 @@ export interface BridgeConfig {
   /** 单个附件大小上限（字节），默认 30MB：超了拒绝并回执。 */
   maxInputBytes: number
   /**
+   * **预设任务**：名字 → 完整指令。用户发 `/<名字>`（或 `/pdf <名字>`）即可展开成整条指令，
+   * 于是"发文件 → 回一句短名字"就能干活，不用每次打一长串要求。
+   */
+  presets: Record<string, string>
+  /**
+   * 收到文件后**自动**用哪个预设（默认空 = 不自动，仍等用户指令）。
+   * 设成 `"全处理"` 之类即可把"发文件 → 下指令"两步压成一步。
+   */
+  defaultPreset: string
+  /** 自动使用默认预设前等多久（毫秒），默认 60 秒；期间用户发了指令就用用户的。 */
+  autoPresetDelayMs: number
+  /**
    * 是否让 agent 自行走完插件确认单，默认 true。
    *
    * 手机端没法逐步点「确认」：不开这个，任务会因为停在确认单上而**什么都没产出**（实测踩过）。
@@ -222,6 +234,9 @@ export function normalizeConfig(raw: Record<string, unknown>, overrides: Partial
     maxQueueLength: num('maxQueueLength', DEFAULTS.maxQueueLength),
     outboxRetentionDays: num('outboxRetentionDays', DEFAULTS.outboxRetentionDays),
     autoConfirm: raw.autoConfirm !== false,
+    presets: readPresets(raw.presets),
+    defaultPreset: str('defaultPreset', '') as string,
+    autoPresetDelayMs: num('autoPresetDelayMs', 60_000),
     inboxDir: str('inboxDir', '') as string,
     inputTtlMs: num('inputTtlMs', 30 * 60 * 1000),
     maxInputBytes: num('maxInputBytes', DEFAULTS.maxFileBytes),
@@ -305,10 +320,14 @@ export function parseInstruction(
     const head = index > 0 ? candidate.slice(0, index) : ''
     if (head.includes('@') && head.length <= 60) candidate = candidate.slice(index)
   }
-  if (!candidate.startsWith(config.prefix)) {
+  // **预设名本身就是合法触发词**：`/水印`、`拆分` 这类不该被"必须 /pdf 开头"挡掉
+  // （实测漏了这一步，导致预设从来触发不了）。命中预设名时 text 原样带过去，
+  // 由 handleMessage 调 expandPreset 换成整条指令。
+  const isPresetTrigger = matchPreset(candidate, config.presets ?? {}, { prefix: config.prefix }) !== undefined
+  if (!candidate.startsWith(config.prefix) && !isPresetTrigger) {
     return { ok: false, reason: `没有以 ${config.prefix} 开头` }
   }
-  const text = candidate.slice(config.prefix.length).trim()
+  const text = (candidate.startsWith(config.prefix) ? candidate.slice(config.prefix.length) : candidate).trim()
   if (text === '') return { ok: false, reason: '前缀后面没有内容' }
   if (text.length > config.maxInstructionChars) {
     return { ok: false, reason: `指令过长（${text.length} > ${config.maxInstructionChars}）` }
@@ -377,6 +396,8 @@ export function buildTaskPrompt(
     '3. 完成后用中文简要汇报：做了哪些操作、读写了哪些文件（给出绝对路径）、有没有失败或需要我确认的地方。',
     `4. ${confirmRule}`,
     '5. 汇报时请务必列出**产物绝对路径**；若没有产出任何文件，请明确说明「没有产出文件」以及原因。',
+    '6. **我的消息里写的具体要求（尤其是文件名/命名方式）优先于下面的通用约定**：'
+    + '我给了名字就用我的名字，没给才按通用约定命名；两者冲突时以我的为准。',
     '',
     ...(options.inputs === undefined || options.inputs.length === 0
       ? []
@@ -647,6 +668,76 @@ export function formatBusyMessage(queueLength: number, maxQueueLength: number): 
     `⏳ 前面的任务还没跑完（队列 ${queueLength}/${maxQueueLength}），这条先没收。`,
     '等一会儿再发一次；急的话把任务拆小一点。',
   ].join('\n')
+}
+
+/**
+ * 匹配预设触发词。
+ *
+ * 规则：预设名必须在**开头**，名字之后可以是结束，也可以是**空格/冒号**——后面那段当作"本次参数"。
+ * 实测踩过：只允许"整条消息等于预设名"会让 `/全处理 命名为「X」` 被当成"没有以 /pdf 开头"丢掉 ✗。
+ */
+export function matchPreset(
+  text: string,
+  presets: Record<string, string>,
+  options: { prefix?: string } = {},
+): { name: string; arg: string } | undefined {
+  const prefix = options.prefix ?? '/pdf'
+  const table = presets ?? {}
+  const trimmed = text.trim()
+  const bare = trimmed.startsWith(prefix) ? trimmed.slice(prefix.length).trim() : trimmed
+  for (const name of Object.keys(table)) {
+    for (const candidate of [bare, bare.replace(/^\/+/, '').trim()]) {
+      if (candidate === name) return { name, arg: '' }
+      if (candidate.startsWith(name)) {
+        const rest = candidate.slice(name.length)
+        if (/^[\s:：]/u.test(rest)) return { name, arg: rest.replace(/^[\s:：]+/u, '').trim() }
+      }
+    }
+  }
+  return undefined
+}
+
+/** 读预设表：只接受"名字 → 非空字符串"。 */
+function readPresets(raw: unknown): Record<string, string> {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim() !== '' && name.trim() !== '') out[name.trim()] = value.trim()
+  }
+  return out
+}
+
+/**
+ * 把"预设名"展开成完整指令；名字后面的参数作为**优先补充要求**附在后面。
+ *
+ * 认三种写法（去空格、忽略大小写）：`/水印`、`/pdf 水印`、`水印`；
+ * 也认带参数的：`/全处理 命名为「X」和「Y」`。
+ * **没命中就原样返回**——普通指令不受影响。
+ */
+export function expandPreset(
+  text: string,
+  presets: Record<string, string>,
+  options: { prefix?: string } = {},
+): { text: string; preset?: string } {
+  const hit = matchPreset(text, presets, options)
+  if (hit === undefined) return { text: text.trim() }
+  const instruction = (presets ?? {})[hit.name]
+  if (hit.arg === '') return { text: instruction, preset: hit.name }
+  return {
+    text: `${instruction}\n\n【我这次的补充要求（优先于上面的通用约定）】${hit.arg}`,
+    preset: hit.name,
+  }
+}
+
+/** 收到附件后的回执：把可用预设列出来，用户就不用记（实测"记不住触发词"是最常见的摩擦）。 */
+export function formatAttachmentAck(name: string, ttlMinutes: number, presetNames: readonly string[]): string {
+  const lines = [`📎 已收到：${name}`]
+  if (presetNames.length > 0) {
+    lines.push(`回复 ${presetNames.map(preset => `/${preset}`).join(' 或 ')} 即可按预设处理；`)
+  }
+  lines.push(`也可以回复 /pdf 开头的指令（${ttlMinutes} 分钟内有效），例如：`)
+  lines.push('  /pdf 给这份文件的第 1 页居中加页码')
+  return lines.join('\n')
 }
 
 /** 一个 outbox 下的目录项。 */

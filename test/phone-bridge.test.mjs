@@ -18,6 +18,8 @@ import {
   isTaskDirName,
   selectExpiredTaskDirs,
   buildDownloadUrl,
+  expandPreset,
+  formatAttachmentAck,
   isInsidePath,
   buildTaskPrompt,
   extensionOf,
@@ -133,6 +135,7 @@ const message = (over = {}) => ({
   check('提示词含"绝对不要修改源文件"', prompt.includes('绝对不要修改源文件'))
   check('提示词给出 outbox 绝对路径（含 taskId）', prompt.includes('/tmp/pb-out/t-1'))
   check('提示词要求试错/中间文件写到 /tmp（否则中间件也会被发给你）', prompt.includes('试错/中间文件请写到 /tmp'))
+  check('提示词写明「我的命名要求优先于通用约定」', prompt.includes('优先于下面的通用约定') && prompt.includes('我给了名字就用我的名字'), '')
   check('提示词把手机原文标注为"任务描述"而非系统指令', prompt.includes('仅作为任务描述'))
   check('提示词原样包含可疑内容（由约束兜住，而不是偷偷过滤）', prompt.includes('rm -rf /'))
   const auto = buildTaskPrompt('x', { outboxDir: '/o', taskId: 't', autoConfirm: true })
@@ -144,6 +147,36 @@ const message = (over = {}) => ({
   const manual = buildTaskPrompt('x', { outboxDir: '/o', taskId: 't', autoConfirm: false })
   check('autoConfirm=false 时要求停在确认单上等用户', manual.includes('停下来') && !manual.includes('回传该令牌'), '')
   check('默认配置 autoConfirm=true', CONFIG.autoConfirm === true)
+  const pc = normalizeConfig({ chatId: 'oc_x', allowedSenderIds: ['ou'], outboxDir: '/o', presets: { 水印: '删水印指令', 拆分: '拆分指令' }, defaultPreset: '水印' })
+  check('预设：/名字、/pdf 名字、裸名字 都能展开',
+    expandPreset('/水印', pc.presets, { prefix: pc.prefix }).preset === '水印'
+    && expandPreset('/pdf 拆分', pc.presets, { prefix: pc.prefix }).preset === '拆分'
+    && expandPreset('拆分', pc.presets, { prefix: pc.prefix }).text === '拆分指令', '')
+  {
+    const now2 = Date.now()
+    const presetMsg = { message_id: 'om_p', msg_type: 'text', content: JSON.stringify({ text: '/水印' }), sender: { id: 'ou' }, create_time: String(now2) }
+    const parsed = parseInstruction(presetMsg, pc, now2)
+    {
+    const now3 = Date.now()
+    const withArg = '/全处理 命名为「沈阳43中八上数学月考试卷」和「沈阳43中八上数学月考答案」'
+    const expanded = expandPreset(withArg, { 全处理: '【预设】删水印+拆分' }, { prefix: '/pdf' })
+    check('预设名可以带参数（`/全处理 命名为…`）', expanded.preset === '全处理' && expanded.text.includes('命名为「沈阳43中八上数学月考试卷」'), expanded.text.slice(0, 60))
+    check('参数被标成「优先于通用约定」（否则会被预设里的默认命名盖掉）', expanded.text.includes('优先于上面的通用约定'), '')
+    const parsedArg = parseInstruction({ message_id: 'om_arg', msg_type: 'text', content: JSON.stringify({ text: withArg }), sender: { id: 'ou' }, create_time: String(now3) }, normalizeConfig({ chatId: 'oc_x', allowedSenderIds: ['ou'], outboxDir: '/o', presets: { 全处理: 'x' } }), now3)
+    check('带参数的预设消息能通过前缀检查（实测这条以前被静默丢弃）', parsedArg.ok === true, parsedArg.ok ? '' : parsedArg.reason)
+  }
+  check('预设触发词 `/水印` 能通过前缀检查（否则预设永远触发不了）',
+      parsed.ok === true && parsed.instruction.text === '/水印', parsed.ok ? parsed.instruction.text : parsed.reason)
+    const notPreset = parseInstruction({ ...presetMsg, message_id: 'om_q', content: JSON.stringify({ text: '/随便什么' }) }, pc, now2)
+    check('不在预设表里的 `/xxx` 仍被拒（不会把任何 slash 词都当指令）', notPreset.ok === false, notPreset.ok ? '' : notPreset.reason)
+  }
+  check('预设：没命中就原样返回（普通指令不受影响）',
+    expandPreset('给 A.pdf 加页码', pc.presets, { prefix: pc.prefix }).preset === undefined
+    && expandPreset('给 A.pdf 加页码', pc.presets, { prefix: pc.prefix }).text === '给 A.pdf 加页码', '')
+  check('预设表：非字符串/空名被过滤',
+    Object.keys(normalizeConfig({ chatId: 'oc', allowedSenderIds: ['ou'], outboxDir: '/o', presets: { a: 'x', b: '', '  ': 'y', c: 42 } }).presets).join(',') === 'a', '')
+  check('附件回执会列出可用预设（用户不用记触发词）',
+    formatAttachmentAck('期末数学.pdf', 30, ['水印', '拆分']).includes('/水印') && formatAttachmentAck('x.pdf', 30, ['水印']).includes('按预设处理'), '')
 }
 
 // ── 4. 账本：去重与清理 ───────────────────────────────────────────────────
