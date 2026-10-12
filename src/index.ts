@@ -34,6 +34,7 @@
  */
 
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { PDF_API_PREFIX, PDF_SURFACE_SCRIPT, makePdfRoutes, type WebServerLike } from './host/routes.ts'
 import { DEFAULT_CONFIRMATION_POLICY, type ConfirmationPolicy } from './core/confirmation.ts'
@@ -74,6 +75,20 @@ export interface PdfStudioConfig {
    * 确认单以纯文本返回，用户对助手说「确认执行」即可。
    */
   surface?: boolean
+  /**
+   * 「手机直下」下载令牌。**默认关闭**：不设就不注册下载端点。
+   *
+   * 设了之后（长度必须 ≥ 16，太短会被拒绝并告警）会注册
+   * `GET /api/pdf-studio/download?path=<绝对路径>&token=<令牌>`：
+   * 手机在 Tailscale / 内网里可以直接下载产物，不依赖飞书文件传输。
+   *
+   * 安全边界：这条路由**不走 loopback 栅栏**，凭据是 token；可读取范围被硬限制在
+   * `downloadRoot` 之内（越界 403），单文件超过 `maxBytes`（默认 64MB）返回 413。
+   * 公网暴露前请务必配合 DSH 的 `--trusted-host` 与网络层（Tailscale）使用。
+   */
+  downloadToken?: string
+  /** 下载端点允许读取的根目录；默认 `<workspaceRoot>/pdf-outbox`。 */
+  downloadRoot?: string
   /**
    * OCR 语言数据目录（放 `<lang>.traineddata[.gz]`）。
    *
@@ -224,7 +239,21 @@ export default {
       }
 
       // 2b. The API and asset routes the surface talks to.
-      for (const route of makePdfRoutes({ workspaceRoot })) {
+      const downloadToken = typeof config.downloadToken === 'string' ? config.downloadToken.trim() : ''
+      let download: { token: string; root: string } | undefined
+      if (downloadToken !== '') {
+        if (downloadToken.length < 16) {
+          // fail-closed：令牌太短就**不注册**这条路由，而不是用一个弱令牌把端点暴露出去
+          ctx.logger?.warn?.('[pdf-studio] downloadToken 长度 < 16，已拒绝注册下载端点')
+        } else {
+          const root = typeof config.downloadRoot === 'string' && config.downloadRoot.trim() !== ''
+            ? config.downloadRoot.trim()
+            : join(workspaceRoot, 'pdf-outbox')
+          download = { token: downloadToken, root }
+          ctx.logger?.info?.('[pdf-studio] download endpoint enabled, root=' + root)
+        }
+      }
+      for (const route of makePdfRoutes({ workspaceRoot, ...(download === undefined ? {} : { download }) })) {
         disposers.push(webServer.register(route))
       }
 

@@ -55,3 +55,9 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# 手机远控桥的运行时文件（状态账本与日志，含会话/消息 id，不该提交）
+phone-bridge-state.json
+phone-bridge.log
+pb.config.json
+phone-bridge.config.json

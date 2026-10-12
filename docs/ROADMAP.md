@@ -65,3 +65,9 @@
 
 `src/**` 改动必须 `npm run build` 并且**重启 DSH** 才会在会话/GUI 里生效；
 只改 `public/app.js` 且 `surface: true` 时刷新页面即可。`scripts/**` 与 `test/**` 不需要重启。
+
+## 扩展：手机远控（`feature/phone-bridge`）
+
+| 能力 | 位置 | 状态 |
+|---|---|---|
+| 飞书指令 → `dsh --profile headless` 执行 → outbox 回传 | `scripts/phone-bridge/` + `docs/PHONE-BRIDGE.md` | **骨架已完成**（纯逻辑 51 条测试 + 不联网自检 6 项；`npm test` 26 套件 exit 0）。待办：真机联调（需用户提供 chat_id、续期 lark-cli 授权、允许试跑一次 headless）；可选 Tailscale HTTP 直下（需给插件端点加 token，当前是 loopback-only） |

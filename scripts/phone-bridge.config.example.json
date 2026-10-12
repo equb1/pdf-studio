@@ -1,0 +1,42 @@
+{
+  "chatId": "oc_替换成你的会话",
+  "allowedChatIds": [],
+  "allowedSenderIds": [
+    "ou_替换成你的open_id"
+  ],
+  "allowedSenderNames": [
+    "你的名字"
+  ],
+  "prefix": "/pdf",
+  "identity": "bot",
+  "readIdentity": "bot",
+  "outboxDir": "/Users/你的用户名/Desktop/pdf-outbox",
+  "dshPath": "dsh",
+  "profile": "headless",
+  "dshArgs": [],
+  "larkCliPath": "lark-cli",
+  "pollMs": 5000,
+  "timeoutMs": 300000,
+  "maxInstructionChars": 2000,
+  "maxAgeMs": 1800000,
+  "allowedExtensions": [
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".txt",
+    ".md"
+  ],
+  "maxFileBytes": 31457280,
+  "maxFilesPerTask": 5,
+  "statePath": "phone-bridge-state.json",
+  "logPath": "phone-bridge.log",
+  "downloadBaseUrl": "http://你的tailscale地址:19387",
+  "downloadToken": "",
+  "maxQueueLength": 3,
+  "outboxRetentionDays": 14,
+  "autoConfirm": true,
+  "inboxDir": "",
+  "inputTtlMs": 1800000,
+  "maxInputBytes": 31457280
+}

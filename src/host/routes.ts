@@ -13,6 +13,7 @@
 
 import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { timingSafeEqual } from 'node:crypto'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -209,7 +210,57 @@ async function listPdfs(
  *
  * @param options.workspaceRoot - directory the file picker browses.
  */
-export function makePdfRoutes(options: { workspaceRoot: string }): WebRouteLike[] {
+/**
+ * 「手机直下」下载端点的选项（**默认关闭**：不配置 token 就不注册这条路由）。
+ *
+ * 为什么单独一条且不走 loopback 栅栏：手机在 Tailscale/内网里访问主机时，
+ * socket 地址**不是** loopback，`guard()` 会一律 403。这条路由的凭据是 **token**
+ * （而不是"本机即可信"），并且把可下载范围**硬限制在一个目录**内。
+ */
+export interface DownloadOptions {
+  /** 访问令牌：长度必须 ≥ 16（配置侧校验，太短直接不注册）。 */
+  token: string
+  /** 允许下载的根目录（绝对路径）；越界一律 403。 */
+  root: string
+  /** 单文件大小上限，默认 64MB（防止误传超大文件把内存吃满）。 */
+  maxBytes?: number
+}
+
+/** 定时安全比较：长度不同直接 false（不泄露长度以外的信息）。 */
+export function tokenMatches(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided, 'utf8')
+  const b = Buffer.from(expected, 'utf8')
+  if (a.length !== b.length || a.length === 0) return false
+  return timingSafeEqual(a, b)
+}
+
+/** 路径是否在根目录内（含边界检查，`/root2` 不算在 `/root` 内）。 */
+export function isInsideRoot(candidate: string, root: string): boolean {
+  const full = resolve(candidate)
+  const base = resolve(root)
+  return full === base || full.startsWith(base + sep)
+}
+
+/** 下载响应的内容类型（按扩展名；未知类型给 octet-stream，不猜）。 */
+export function contentTypeOf(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case '.pdf': return 'application/pdf'
+    case '.png': return 'image/png'
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg'
+    case '.txt': return 'text/plain; charset=utf-8'
+    case '.md': return 'text/markdown; charset=utf-8'
+    case '.json': return 'application/json; charset=utf-8'
+    default: return 'application/octet-stream'
+  }
+}
+
+/** `Content-Disposition` 里的文件名：去掉引号/换行等会破坏头部的字符。 */
+export function safeFilename(name: string): string {
+  return name.replace(/[\r\n"]/gu, '_').slice(0, 180)
+}
+
+export function makePdfRoutes(options: { workspaceRoot: string; download?: DownloadOptions }): WebRouteLike[] {
   const workspace = resolve(options.workspaceRoot)
 
   /** Reject a path that escapes the workspace root (realpath-free check). */
@@ -218,7 +269,63 @@ export function makePdfRoutes(options: { workspaceRoot: string }): WebRouteLike[
     return full === workspace || full.startsWith(workspace + sep)
   }
 
+  const download = options.download
+  const downloadRoot = download === undefined ? undefined : resolve(download.root)
+  const maxBytes = download?.maxBytes ?? 64 * 1024 * 1024
+  const downloadRoutes: WebRouteLike[] = download === undefined || downloadRoot === undefined
+    ? []
+    : [
+        {
+          kind: 'exact',
+          path: PDF_API_PREFIX + '/download',
+          // 注意：这条路由**不调用 guard()**——凭据是 token，而不是"本机地址"。
+          // 因此它必须自己把可访问范围收紧到 downloadRoot，并对 token 做定时安全比较。
+          handler: async (req, res) => {
+            if (!requireMethod(req, res, 'GET')) return
+            const url = new URL(req.url ?? '/', 'http://localhost')
+            if (!tokenMatches(url.searchParams.get('token') ?? '', download.token)) {
+              writeJson(res, 403, { ok: false, error: 'forbidden: bad-token' })
+              return
+            }
+            const requested = url.searchParams.get('path') ?? ''
+            if (requested === '') {
+              writeJson(res, 400, { ok: false, error: 'missing-path' })
+              return
+            }
+            const full = resolve(requested)
+            if (!isInsideRoot(full, downloadRoot)) {
+              writeJson(res, 403, { ok: false, error: 'forbidden: outside-download-root' })
+              return
+            }
+            let info
+            try {
+              info = await stat(full)
+            } catch {
+              writeJson(res, 404, { ok: false, error: 'not-found' })
+              return
+            }
+            if (!info.isFile()) {
+              writeJson(res, 404, { ok: false, error: 'not-a-file' })
+              return
+            }
+            if (info.size > maxBytes) {
+              writeJson(res, 413, { ok: false, error: 'file-too-large', size: info.size, maxBytes })
+              return
+            }
+            const body = await readFile(full)
+            res.writeHead(200, {
+              'content-type': contentTypeOf(full),
+              'content-length': body.length,
+              'content-disposition': 'attachment; filename="' + safeFilename(basename(full)) + '"',
+              'cache-control': 'no-store',
+            })
+            res.end(body)
+          },
+        },
+      ]
+
   return [
+    ...downloadRoutes,
     {
       kind: 'exact',
       path: PDF_SURFACE_SCRIPT,

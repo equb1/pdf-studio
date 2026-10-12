@@ -42,7 +42,7 @@ import {
 import { analyzeDocument, applyTextEdits, exportSearchable, inspectDocument, protectPdf, readEditableDocument, reportWatermarks, stampWatermark, stripWatermarks, lineSummary } from './engine.ts'
 import { redrawLineInPdfBytes } from '../core/line-redraw.ts'
 import { openPdf, openPdfBytes } from '../core/pdf.ts'
-import { extractTextLayer } from '../core/text-layer.ts'
+import { extractTextLayer, formatEmptyExtractionNotice } from '../core/text-layer.ts'
 import {
   applyTemplate,
   drawTextOnPage,
@@ -687,7 +687,10 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         }
         if (page.lines.length > 80) out.push(`…本页其余 ${page.lines.length - 80} 行省略`)
       }
-      if (out.length === 0) out.push(wanted === undefined ? '没有提取到内容。' : `第 ${wanted} 页不存在。`)
+      if (out.length === 0) {
+        // 分开说：页号超范围 ≠ 页存在但没有可提取文字（后者要指向 OCR，别让人以为文件缺页）
+        out.push(...formatEmptyExtractionNotice({ pageCount: analysis.pages, kinds: analysis.kinds, ...(wanted === undefined ? {} : { wanted }) }))
+      }
       return { text: out.join('\n') }
     },
   }

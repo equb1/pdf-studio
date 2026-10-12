@@ -354,3 +354,38 @@ export async function extractPageContent(doc: PdfDoc, pageNumber: number): Promi
 
   return { page: pageNumber, width, height, kind: 'text', lines, notes }
 }
+
+/**
+ * `pdf_extract_text` 在"什么都没提取出来"时该说的话。
+ *
+ * 为什么单独抽出来：这里原先只有一句兜底 `第 N 页不存在。`，把两种完全不同的情况混为一谈——
+ *   ① 页号真的超出范围；② 页存在，但被分诊判为 `empty`/`image`（没有文本层，或文本层缺 ToUnicode 无法可信解码）。
+ * 实测踩过：真机任务里的助手看到「第 2 页不存在」后，误以为这份 2 页文件缺页，还去怀疑工具坏了。
+ * 措辞必须把两者分开，并给下一步（OCR / 可搜索副本）。
+ */
+export function formatEmptyExtractionNotice(options: {
+  wanted?: number
+  pageCount: number
+  kinds: readonly string[]
+}): string[] {
+  const { wanted, pageCount, kinds } = options
+  if (wanted !== undefined && (wanted < 1 || wanted > pageCount)) {
+    return [`第 ${wanted} 页不存在（该文件共 ${pageCount} 页）。`]
+  }
+  const allUntrusted = kinds.length > 0 && kinds.every(kind => kind === 'empty' || kind === 'image')
+  if (wanted === undefined) {
+    const lines = [`没有提取到内容（共 ${pageCount} 页）。`]
+    if (allUntrusted) {
+      lines.push(`原因：${pageCount} 页都被判为 ${[...new Set(kinds)].join('、')}——没有文本层，或文本层缺少 ToUnicode 因而无法可信解码。`)
+      lines.push('要把图片页上的文字取出来请用 OCR：pdf_make_searchable 可生成带文字层的可搜索副本。')
+    }
+    return lines
+  }
+  const kind = kinds[wanted - 1] ?? 'unknown'
+  const lines = [`第 ${wanted} 页没有可提取的文字（该页被判为 ${kind}）。`]
+  if (kind === 'empty' || kind === 'image') {
+    lines.push('这通常是扫描/图片页，或文本层缺少 ToUnicode——不是"页不存在"，也不是工具坏了。')
+    lines.push('需要文字请用 OCR：pdf_make_searchable 生成可搜索副本。')
+  }
+  return lines
+}
