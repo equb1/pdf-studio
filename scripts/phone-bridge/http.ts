@@ -63,6 +63,8 @@ export interface HttpBridgeOptions {
   maxBodyBytes: number
   /** 页面上显示的预设按钮（名字 → 指令）。 */
   presets: Record<string, string>
+  /** 产物扩展名白名单（必须与状态接口一致，否则两处列出的顺序会不同）。 */
+  allowedExtensions?: string[]
   /** 预设 → 名称输入框（页面据此弹窗）。 */
   presetFields?: Record<string, Array<{ key: string; label: string; suffix?: string }>>
   /** 预设按钮"名字"，页面只显示名字。 */
@@ -160,15 +162,29 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
       return
     }
 
-    // 产物下载：**按 taskId + 序号**（服务端自己列目录），不在 URL 里传路径——
-    // 实测 URL 里传中文路径会因解码/规范化不一致而 404（ASCII 正常、中文失败），
-    // 换成序号后完全不碰文件名编码，链路更稳。
+    // 产物下载：**优先按文件名**取，序号只做兜底。
+    //
+    // 踩过的坑：显示用状态接口列出的顺序、下载用这里重新列一遍的顺序，
+    // 两处只要白名单或目录内容有一点差异，序号就整体错位——
+    // 表现是"标签写着试卷、下载下来是答案"✗。按名字取就彻底避免了这类错位。
     if (req.method === 'GET' && path === '/api/artifact') {
       const taskId = url.searchParams.get('taskId') ?? ''
       const index = Number(url.searchParams.get('index') ?? '0')
+      const wanted = url.searchParams.get('name') ?? ''
       if (taskId === '' || !Number.isInteger(index) || index < 0) { json(res, 400, { ok: false, error: 'missing-taskId' }); return }
-      const listed = listArtifacts(options.outboxDir, taskId, ['.pdf', '.png', '.jpg', '.jpeg', '.txt', '.md'])
-      const picked = listed[index]
+      const allowed = options.allowedExtensions ?? ['.pdf', '.png', '.jpg', '.jpeg', '.txt', '.md']
+      const listed = listArtifacts(options.outboxDir, taskId, allowed)
+      let picked: string | undefined
+      if (wanted !== '') {
+        const wantNorm = wanted.normalize('NFC')
+        picked = listed.find(candidate => basename(candidate).normalize('NFC') === wantNorm)
+        if (picked === undefined) {
+          const stem = wantNorm.replace(/\.[^.]+$/u, '')
+          const hits = listed.filter(candidate => basename(candidate).normalize('NFC').startsWith(stem))
+          if (hits.length === 1) picked = hits[0]
+        }
+      }
+      if (picked === undefined) picked = listed[index]
       if (picked === undefined) { json(res, 404, { ok: false, error: 'not-found' }); return }
       const body = await readFile(picked)
       res.writeHead(200, {
