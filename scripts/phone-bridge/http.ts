@@ -65,6 +65,8 @@ export interface HttpBridgeOptions {
   presets: Record<string, string>
   /** 预设按钮"名字"，页面只显示名字。 */
   page: string
+  /** 页面文件路径：给了就**每次请求都读**（改完页面刷新即生效，不用重启服务）。 */
+  pagePath?: string
   logger: (line: string) => void
   /** 提交任务：返回 taskId。`inputs` 是已落盘的文件绝对路径。 */
   submit: (task: { text: string; inputs: string[]; taskId: string }) => void
@@ -135,7 +137,12 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
 
     // 页面本身不需要 token（手机第一次打开时还没有；token 由页面索取后存本地）
     if (req.method === 'GET' && (path === '/' || path === '/index.html')) {
-      const html = options.page.replace('__PRESETS__', JSON.stringify(Object.keys(options.presets)))
+      // 每次请求都读页面文件：改前端不用重启服务（实测忘了这点，改完页面刷新还是旧的 ✗）
+      let template = options.page
+      if (options.pagePath !== undefined) {
+        try { template = await readFile(options.pagePath, 'utf8') } catch { /* 读不到就用启动时那份 */ }
+      }
+      const html = template.replace('__PRESETS__', JSON.stringify(Object.keys(options.presets)))
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(html), 'cache-control': 'no-store' })
       res.end(html)
       return

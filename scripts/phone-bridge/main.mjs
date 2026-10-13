@@ -751,6 +751,7 @@ export async function main(argv = process.argv.slice(2)) {
         maxBodyBytes: config.maxBodyBytes,
         presets: config.presets,
         page,
+        pagePath: join(HERE, 'web', 'index.html'),
         logger,
         submit: task => { submitTask(task) },
         status: taskId => taskStatus(taskId),
