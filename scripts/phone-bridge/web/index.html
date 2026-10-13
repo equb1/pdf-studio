@@ -2,81 +2,842 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1d4ed8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>PDF 助手</title>
 <style>
   :root {
-    --blue:#2563eb; --blue-dark:#1d4ed8; --ink:#0f172a; --sub:#64748b;
-    --line:#e2e8f0; --bg:#f1f5f9; --card:#fff; --ok:#047857; --err:#b91c1c; --warn:#b45309;
+    --bg-page: #f2f2f7;
+    --bg-card: #ffffff;
+    --bg-subtle: #f8f8fa;
+    --bg-tertiary: #ebebf0;
+    --separator: #e5e5ea;
+    --border-card: rgba(0, 0, 0, 0.05);
+    
+    --label-primary: #000000;
+    --label-secondary: #6c6c70;
+    --label-tertiary: #8e8e93;
+    
+    --accent: #0071e3;
+    --accent-hover: #0077ed;
+    --accent-subtle: #f0f6fe;
+    --accent-border: rgba(0, 113, 227, 0.2);
+    
+    --success: #34c759;
+    --success-subtle: #edf9f0;
+    --warning: #ff9500;
+    --warning-subtle: #fff8ee;
+    --danger: #ff3b30;
+    --danger-subtle: #fff2f1;
+    
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-pill: 999px;
+    
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.02);
   }
-  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  html, body { margin:0; padding:0; }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-page: #000000;
+      --bg-card: #1c1c1e;
+      --bg-subtle: #2c2c2e;
+      --bg-tertiary: #3a3a3c;
+      --separator: #38383a;
+      --border-card: rgba(255, 255, 255, 0.08);
+      
+      --label-primary: #ffffff;
+      --label-secondary: #aeaeb2;
+      --label-tertiary: #8e8e93;
+      
+      --accent: #0a84ff;
+      --accent-hover: #409cff;
+      --accent-subtle: rgba(10, 132, 255, 0.15);
+      --accent-border: rgba(10, 132, 255, 0.3);
+      
+      --success: #30d158;
+      --success-subtle: rgba(48, 209, 88, 0.15);
+      --warning: #ffd60a;
+      --warning-subtle: rgba(255, 214, 10, 0.15);
+      --danger: #ff453a;
+      --danger-subtle: rgba(255, 69, 58, 0.15);
+      
+      --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
+    }
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; min-height: 100%; background: var(--bg-page); }
   body {
-    font:16px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
-    background:var(--bg); color:var(--ink); padding-bottom:96px;
-    -webkit-font-smoothing:antialiased;
+    font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+    color: var(--label-primary);
+    padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+    -webkit-font-smoothing: antialiased;
   }
-  header { background:linear-gradient(135deg, var(--blue), var(--blue-dark)); color:#fff; padding:22px 18px 26px; border-radius:0 0 22px 22px; }
-  header h1 { margin:0; font-size:20px; font-weight:700; }
-  header p { margin:6px 0 0; font-size:13px; opacity:.9; }
-  header .ver { display:inline-block; margin-top:10px; font-size:11px; padding:2px 8px; border-radius:999px; background:rgba(255,255,255,.18); }
-  main { padding:14px; max-width:680px; margin:0 auto; }
-  .card { background:var(--card); border-radius:16px; padding:16px; margin-bottom:14px; box-shadow:0 1px 2px rgba(15,23,42,.06), 0 10px 26px -20px rgba(15,23,42,.35); }
-  .card > h2 { margin:0 0 14px; font-size:15px; font-weight:700; display:flex; align-items:center; gap:8px; }
-  .step { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:var(--blue); color:#fff; font-size:12px; font-weight:700; flex:0 0 auto; }
-  .hint { font-size:13px; color:var(--sub); margin:10px 0 0; }
-  .row { display:flex; gap:10px; }
-  button { font:inherit; border-radius:12px; border:1px solid var(--line); background:#fff; color:var(--ink); padding:14px 16px; min-height:50px; cursor:pointer; }
-  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; font-weight:700; width:100%; }
-  button.primary:disabled { opacity:.5; }
-  .pick { display:flex; align-items:center; justify-content:center; gap:10px; border:2px dashed #bfdbfe; background:#eff6ff; color:var(--blue-dark); border-radius:14px; padding:22px 16px; font-weight:700; cursor:pointer; }
-  input[type=file] { display:none; }
-  .files { list-style:none; margin:14px 0 0; padding:0; }
-  .files li { display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; margin-bottom:8px; font-size:14px; }
-  .files .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .files .size { color:var(--sub); font-size:12px; flex:0 0 auto; }
-  .files .del { flex:0 0 auto; width:32px; height:32px; min-height:32px; padding:0; border-radius:50%; color:var(--err); border-color:#fecaca; background:#fef2f2; font-size:15px; line-height:1; }
-  .count { font-size:13px; color:var(--sub); margin:12px 0 0; }
-  .presets { display:flex; flex-direction:column; gap:10px; }
-  .presets button { width:100%; text-align:left; font-weight:700; font-size:16px; border:1.5px solid #bfdbfe; color:var(--blue-dark); background:#f8fbff; display:flex; align-items:center; justify-content:space-between; gap:10px; }
-  .presets button::after { content:'›'; font-size:20px; color:#93c5fd; }
-  details.more { margin-top:14px; border-top:1px solid var(--line); padding-top:12px; }
-  details.more summary { cursor:pointer; color:var(--sub); font-size:14px; list-style:none; }
-  details.more summary::-webkit-details-marker { display:none; }
-  details.more summary::before { content:'＋ '; }
-  textarea { width:100%; font:15px/1.5 inherit; padding:12px; border:1px solid var(--line); border-radius:12px; margin-top:10px; min-height:88px; resize:vertical; color:var(--ink); }
-  input[type=password], input[type=text] { width:100%; font:16px/1.4 inherit; padding:13px; border:1px solid var(--line); border-radius:12px; color:var(--ink); background:#fff; }
-  .status { margin-top:14px; font-size:14px; white-space:pre-wrap; color:var(--sub); }
-  .status.ok { color:var(--ok); } .status.err { color:var(--err); } .status.warn { color:var(--warn); }
-  .dl { display:flex; align-items:center; gap:10px; margin-top:10px; padding:14px 16px; border:1.5px solid var(--blue); border-radius:12px; color:var(--blue-dark); text-decoration:none; font-weight:700; word-break:break-all; background:#f8fbff; }
-  .dl::before { content:'⬇︎'; font-size:18px; }
-  #modal { position:fixed; inset:0; background:rgba(15,23,42,.5); z-index:100; display:flex; align-items:flex-end; }
-  #modal .sheet { background:#fff; width:100%; max-width:680px; margin:0 auto; border-radius:20px 20px 0 0; padding:18px 16px 22px; max-height:88vh; overflow:auto; }
-  #modal h2 { margin:0 0 4px; font-size:17px; }
-  #modal label { display:block; font-size:13px; color:var(--sub); margin:14px 0 6px; }
-  #modal .row { margin-top:18px; }
-  #modal .row button { flex:1; }
-  #modal .row button.primary { flex:2; }
-  .hidden { display:none !important; }
-  footer { text-align:center; color:var(--sub); font-size:12px; padding:6px 16px 26px; }
-  #debug { position:fixed; left:0; right:0; bottom:64px; z-index:99; background:#0f172a; color:#f8fafc; font:12px/1.5 ui-monospace, Menlo, monospace; padding:10px 12px; max-height:42vh; overflow:auto; white-space:pre-wrap; }
-  #debug .dbg-row { cursor:pointer; padding:1px 0; }
-  #debugBar { float:right; display:flex; gap:6px; margin:0 0 6px 8px; }
-  #debugBar button { min-height:32px; padding:4px 10px; font-size:12px; font-weight:600; border-radius:8px; }
-  #debugToggle { position:fixed; right:12px; bottom:12px; z-index:101; min-height:44px; padding:10px 16px; border-radius:999px; background:#fff; box-shadow:0 4px 14px -4px rgba(15,23,42,.4); font-size:13px; font-weight:600; color:var(--sub); }
+
+  /* Navigation Bar */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: var(--bg-page);
+    border-bottom: 1px solid var(--separator);
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 16px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .nav-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .nav-icon {
+    width: 28px;
+    height: 28px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .nav-icon svg { width: 22px; height: 22px; }
+  .nav-title h1 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: var(--radius-pill);
+    background: var(--bg-card);
+    border: 1px solid var(--separator);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--label-secondary);
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--label-tertiary);
+  }
+  .status-pill.online .status-dot {
+    background: var(--success);
+  }
+  .status-pill.online {
+    color: var(--label-primary);
+  }
+
+  main {
+    max-width: 580px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+
+  /* Cards */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-card);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow-card);
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .card-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--label-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .hint {
+    font-size: 13px;
+    color: var(--label-secondary);
+    margin: 8px 0 0;
+    line-height: 1.45;
+  }
+
+  /* Form Elements */
+  input[type=password], input[type=text], textarea {
+    width: 100%;
+    font: inherit;
+    font-size: 15px;
+    padding: 11px 12px;
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    color: var(--label-primary);
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  input[type=password]:focus, input[type=text]:focus, textarea:focus {
+    border-color: var(--accent);
+    background: var(--bg-card);
+    box-shadow: 0 0 0 3px var(--accent-subtle);
+  }
+  input::placeholder, textarea::placeholder {
+    color: var(--label-tertiary);
+  }
+
+  button {
+    font: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--separator);
+    background: var(--bg-subtle);
+    color: var(--label-primary);
+    padding: 11px 16px;
+    min-height: 44px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: background 0.15s ease, opacity 0.15s ease;
+    user-select: none;
+  }
+  button:active {
+    opacity: 0.75;
+  }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #ffffff;
+  }
+  button.primary:hover {
+    background: var(--accent-hover);
+  }
+  button.primary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  button.ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--accent);
+    min-height: auto;
+    padding: 4px 8px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  /* File Selection */
+  .upload-box {
+    border: 1.5px dashed var(--separator);
+    background: var(--bg-subtle);
+    border-radius: var(--radius-md);
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--label-primary);
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .upload-box:hover, .upload-box.dragover {
+    border-color: var(--accent);
+    background: var(--accent-subtle);
+  }
+  .upload-icon {
+    width: 38px;
+    height: 38px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .upload-icon svg { width: 32px; height: 32px; }
+  .upload-text {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .upload-sub {
+    font-size: 12px;
+    color: var(--label-tertiary);
+    margin: 0;
+  }
+  input[type=file] { display: none; }
+
+  /* Selected Files List */
+  .files {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .files li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    background: var(--bg-subtle);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    border: 1px solid var(--border-card);
+  }
+  .file-ext {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 4px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--label-secondary);
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+  }
+  .files .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+  .files .size {
+    color: var(--label-tertiary);
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .files .del {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    min-height: 24px;
+    padding: 0;
+    border-radius: 50%;
+    color: var(--label-tertiary);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .files .del:hover {
+    color: var(--danger);
+    background: var(--danger-subtle);
+  }
+  .count {
+    font-size: 12px;
+    color: var(--label-secondary);
+    margin: 8px 0 0;
+  }
+
+  #actionCard:not(.hidden) {
+    animation: cardAppear 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes cardAppear {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Preset Action Rows - Inset Grouped Cell Style */
+  .presets {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .preset-item {
+    width: 100%;
+    text-align: left;
+    padding: 12px 14px;
+    border-radius: var(--radius-md);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-card);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .preset-item:hover {
+    background: var(--bg-tertiary);
+  }
+  .preset-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .preset-symbol {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    border: 1px solid var(--separator);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .preset-symbol svg { width: 18px; height: 18px; }
+  .preset-text {
+    min-width: 0;
+  }
+  .preset-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--label-primary);
+  }
+  .preset-sub {
+    font-size: 12px;
+    color: var(--label-tertiary);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .preset-action {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--accent);
+    font-size: 13px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .preset-action svg { width: 14px; height: 14px; color: var(--label-tertiary); }
+
+  /* Details section */
+  details.more {
+    margin-top: 12px;
+    border-top: 1px solid var(--separator);
+    padding-top: 12px;
+  }
+  details.more summary {
+    cursor: pointer;
+    color: var(--label-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+  }
+  details.more summary::-webkit-details-marker { display: none; }
+  .chevron-icon {
+    width: 14px;
+    height: 14px;
+    transition: transform 0.2s ease;
+  }
+  details.more[open] .chevron-icon {
+    transform: rotate(90deg);
+  }
+  .prompt-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .prompt-chip {
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: var(--radius-pill);
+    background: var(--bg-subtle);
+    border: 1px solid var(--separator);
+    color: var(--label-secondary);
+    cursor: pointer;
+    min-height: auto;
+  }
+  .prompt-chip:hover {
+    color: var(--label-primary);
+    border-color: var(--label-tertiary);
+  }
+
+  /* Status Banner */
+  .status {
+    margin-top: 12px;
+    font-size: 13px;
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--separator);
+    color: var(--label-secondary);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    display: none;
+  }
+  .status:not(:empty) { display: block; }
+  .status.ok {
+    border-color: var(--success);
+    background: var(--success-subtle);
+    color: var(--success);
+    font-weight: 500;
+  }
+  .status.warn {
+    border-color: var(--warning);
+    background: var(--warning-subtle);
+    color: var(--warning);
+  }
+  .status.err {
+    border-color: var(--danger);
+    background: var(--danger-subtle);
+    color: var(--danger);
+  }
+
+  /* Artifacts */
+  #artifactList { margin-top: 12px; }
+  .artifact-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-md);
+    margin-top: 8px;
+  }
+  .artifact-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--label-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .artifact-desc {
+    font-size: 12px;
+    color: var(--label-tertiary);
+    margin-top: 2px;
+  }
+  .dl-button {
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    color: #ffffff;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .dl-button:active { opacity: 0.8; }
+  .dl-button svg { width: 14px; height: 14px; }
+
+  /* Modal Sheet */
+  #modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 100;
+    display: flex;
+    align-items: flex-end;
+  }
+  @media (min-width: 600px) {
+    #modal { align-items: center; justify-content: center; }
+  }
+  #modal .sheet {
+    background: var(--bg-card);
+    width: 100%;
+    max-width: 520px;
+    margin: 0 auto;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    padding: 20px 18px calc(24px + env(safe-area-inset-bottom, 0px));
+    max-height: 85vh;
+    overflow-y: auto;
+    border: 1px solid var(--separator);
+  }
+  @media (min-width: 600px) {
+    #modal .sheet { border-radius: var(--radius-lg); }
+  }
+  #modal h2 {
+    margin: 0 0 6px;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  #modal label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--label-secondary);
+    margin: 14px 0 6px;
+  }
+  .modal-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+  }
+  .modal-actions button { flex: 1; }
+  .modal-actions button.primary { flex: 1.4; }
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     贴边防误触诊断拉手与侧边滑出抽屉（支持手机手指/桌面鼠标自由拖拽避让、轻触侧滑展开）
+  ────────────────────────────────────────────────────────────────────────── */
+  #debugBackdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: 998;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.24s ease;
+  }
+  #debugBackdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* 侧边滑出式抽屉 */
+  #debug {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(390px, 86vw);
+    z-index: 999;
+    background: var(--bg-card);
+    border-left: 1px solid var(--separator);
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.15);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    color: var(--label-primary);
+    font-size: 12px;
+  }
+  #debug.open {
+    transform: translateX(0);
+  }
+
+  #debugHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: calc(14px + env(safe-area-inset-top, 0px)) 16px 12px;
+    border-bottom: 1px solid var(--separator);
+    background: var(--bg-card);
+    flex-shrink: 0;
+  }
+  #debugTitle {
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--label-primary);
+  }
+  #debugTitle svg {
+    color: var(--accent);
+  }
+  #debugActions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  #debugActions button {
+    min-height: 28px;
+    padding: 2px 10px;
+    font-size: 11.5px;
+    font-weight: 500;
+    border-radius: var(--radius-sm);
+  }
+
+  #debugLogs {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 14px;
+    font: 11px/1.55 ui-monospace, Menlo, Monaco, monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+    -webkit-overflow-scrolling: touch;
+  }
+  #debugLogs .dbg-row {
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    margin-bottom: 4px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--separator);
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  #debugLogs .dbg-row:hover {
+    background: var(--fill-quaternary);
+  }
+  #debugLogs .dbg-row.error-row {
+    border-color: rgba(255, 59, 48, 0.3);
+    background: var(--danger-subtle);
+    color: var(--danger);
+  }
+
+  #debugFooter {
+    padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--separator);
+    font-size: 11px;
+    color: var(--label-tertiary);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-subtle);
+    flex-shrink: 0;
+  }
+
+  /* 侧边吸附浮标：只露出一小截圆角 Tab，不占视野，支持手机与桌面随意拖拽 */
+  #debugToggle {
+    position: fixed;
+    right: 0;
+    top: 60%;
+    transform: translateY(-50%);
+    z-index: 997;
+    width: 32px;
+    height: 60px;
+    padding: 0;
+    min-height: auto;
+    border-radius: 12px 0 0 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--separator);
+    border-right: none;
+    box-shadow: -3px 4px 14px rgba(0, 0, 0, 0.08);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    color: var(--label-secondary);
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: width 0.15s ease, background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  }
+  /* 扩大触控热区（移动端大拇指轻碰即中） */
+  #debugToggle::before {
+    content: '';
+    position: absolute;
+    inset: -10px -10px -10px -20px;
+    z-index: 1;
+  }
+  #debugToggle:hover, #debugToggle.active {
+    width: 38px;
+    color: var(--label-primary);
+    background: var(--bg-subtle);
+  }
+  #debugToggle.dragging {
+    cursor: grabbing;
+    box-shadow: -6px 10px 24px rgba(0, 0, 0, 0.18);
+    background: var(--bg-subtle);
+    transition: none;
+  }
+  #debugToggle .tab-icon {
+    width: 15px;
+    height: 15px;
+    color: var(--label-tertiary);
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: none;
+  }
+  #debugToggle.open .tab-icon {
+    transform: rotate(180deg);
+  }
+  #debugToggle .tab-text {
+    writing-mode: vertical-rl;
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    font-weight: 500;
+    pointer-events: none;
+  }
+  #debugToggle .error-dot {
+    position: absolute;
+    top: 6px;
+    left: 5px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
+    display: none;
+    pointer-events: none;
+  }
+  #debugToggle.has-error .error-dot {
+    display: block;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--label-tertiary);
+    font-size: 11.5px;
+    padding: 14px 16px;
+  }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
 
 <script>
-// 页面错误收集器（放在最前面）+ 通用复制：保证任何脚本出错都能被看到、被一键复制
+// 全局诊断切换与日志助手（保证独立可用，即使主脚本未就绪也绝不失效）
+window.__toggleDebug = function (forceState) {
+  var d = document.getElementById('debug');
+  var b = document.getElementById('debugToggle');
+  var bd = document.getElementById('debugBackdrop');
+  if (!d) return;
+  var isOpen = d.classList.contains('open');
+  var nextOpen = forceState !== undefined ? !!forceState : !isOpen;
+  if (nextOpen) {
+    d.classList.add('open');
+    if (bd) bd.classList.add('open');
+    if (b) b.classList.add('open');
+  } else {
+    d.classList.remove('open');
+    if (bd) bd.classList.remove('open');
+    if (b) b.classList.remove('open');
+  }
+};
+
+window.__clearLogs = function () {
+  var container = document.getElementById('debugLogs');
+  if (container) container.innerHTML = '';
+  var cnt = document.getElementById('dbgCount');
+  if (cnt) cnt.textContent = '0 条记录';
+};
+
+window.__copyAllLogs = function (btn) {
+  var container = document.getElementById('debugLogs');
+  var text = container ? (container.innerText || container.textContent || '') : '';
+  if (!text.trim()) {
+    text = '（暂无日志）';
+  }
+  if (window.__pbCopy) {
+    window.__pbCopy(text, btn);
+  }
+};
+
+// 页面错误收集器 + 复制助手
 window.__pbErrors = [];
 window.__pbCopy = function (text, el) {
   var flash = function () {
     if (!el) { return; }
     var old = el.getAttribute('data-label') || el.textContent || '';
-    el.textContent = '✅ 已复制';
+    el.textContent = '已复制';
     setTimeout(function () { el.textContent = old; }, 1200);
   };
   var legacy = function () {
@@ -103,18 +864,23 @@ window.__pbCopy = function (text, el) {
 window.onerror = function (message, source, line, column) {
   try {
     window.__pbErrors.push(String(message) + ' @' + line + ':' + column);
-    var panel = document.getElementById('debug');
+    var panel = document.getElementById('debugLogs') || document.getElementById('debug');
+    var toggle = document.getElementById('debugToggle');
+    if (toggle) {
+      toggle.classList.add('has-error');
+    }
     if (panel) {
-      panel.style.display = 'block';
       var row = document.createElement('div');
-      row.className = 'dbg-row';
-      row.setAttribute('data-label', '⚠️ 页面出错：' + message + ' @' + line + ':' + column);
-      row.textContent = '⚠️ 页面出错：' + message + ' @' + line + ':' + column;
-      row.style.color = '#fca5a5';
+      row.className = 'dbg-row error-row';
+      row.setAttribute('data-label', '异常：' + message + ' @' + line + ':' + column);
+      row.textContent = '异常：' + message + ' @' + line + ':' + column;
       row.onclick = function () { window.__pbCopy(row.getAttribute('data-label'), row); };
       panel.appendChild(row);
-      var b = document.getElementById('debugToggle');
-      if (b) { b.textContent = '🐞 收起（有错误）'; }
+      var cnt = document.getElementById('dbgCount');
+      if (cnt) {
+        var rows = panel.getElementsByClassName('dbg-row');
+        cnt.textContent = rows.length + ' 条记录';
+      }
     }
   } catch (e) {}
   return false;
@@ -122,78 +888,269 @@ window.onerror = function (message, source, line, column) {
 </script>
 
 <header>
-  <h1>PDF 助手</h1>
-  <p>选一份 PDF → 点一个按钮 → 处理好的文件回到这里</p>
-  <span class="ver" id="verline">页面版本 v8-redesign</span>
+  <div class="nav-title">
+    <div class="nav-icon">
+      <!-- 极简文件轮廓图标 -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+      </svg>
+    </div>
+    <h1>PDF 助手</h1>
+  </div>
+  <div class="status-pill" id="netIndicator">
+    <span class="status-dot"></span>
+    <span id="verline">未连接</span>
+  </div>
 </header>
 
 <main>
+  <!-- 卡片 1：访问口令 -->
   <section class="card" id="authCard">
-    <h2><span class="step">1</span>填一次访问口令</h2>
-    <input type="password" id="tokenInput" placeholder="访问口令（至少 16 位）" autocomplete="off">
-    <p class="hint">口令只存在这台手机里，用来让电脑认得出是你。</p>
-    <div class="row" style="margin-top:12px"><button class="primary" id="saveToken">保存并连接</button></div>
+    <div class="card-header">
+      <h2 class="card-title">连接电脑端</h2>
+    </div>
+    <p class="hint">输入电脑端生成的访问口令（保存在本机浏览器，同网络内直连）。</p>
+    <div style="margin-top:10px">
+      <input type="password" id="tokenInput" placeholder="访问口令（至少 16 位）" autocomplete="off">
+    </div>
+    <div style="margin-top:12px">
+      <button class="primary" id="saveToken" style="width:100%">连接</button>
+    </div>
     <div class="status" id="authStatus"></div>
   </section>
 
+  <!-- 卡片 2：选择文件 -->
   <section class="card hidden" id="workCard">
-    <h2><span class="step">1</span>选择 PDF</h2>
-    <label class="pick" for="fileInput">📄 选择 PDF 文件</label>
-    <input type="file" id="fileInput" accept="application/pdf,.pdf">
-    <p class="count" id="fileCount">还没有选择文件</p>
+    <div class="card-header">
+      <h2 class="card-title">待处理文件</h2>
+      <button type="button" class="ghost" id="reAuthBtn">重新配置口令</button>
+    </div>
+    
+    <label class="upload-box" for="fileInput" id="dropZone">
+      <div class="upload-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
+        </svg>
+      </div>
+      <p class="upload-text">选取 PDF 文件</p>
+      <p class="upload-sub">支持点击选取或拖拽上传，单份或多份</p>
+    </label>
+    <input type="file" id="fileInput" accept="application/pdf,.pdf" multiple>
+    
+    <p class="count" id="fileCount">未选择文件</p>
     <ul class="files" id="fileList"></ul>
   </section>
 
+  <!-- 卡片 3：执行操作 -->
   <section class="card hidden" id="actionCard">
-    <h2><span class="step">2</span>开始处理</h2>
+    <div class="card-header">
+      <h2 class="card-title">操作指令</h2>
+    </div>
+    
     <div class="presets" id="presetRow"></div>
     <p class="hint" id="presetHint"></p>
 
     <details class="more">
-      <summary>我要自己写要求</summary>
-      <textarea id="customText" placeholder="例如：给这份文件的每页右下角加页码"></textarea>
-      <button style="width:100%;margin-top:10px" id="sendCustom">按我写的要求处理</button>
+      <summary>
+        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+        自定义要求
+      </summary>
+      <div class="prompt-chips">
+        <span class="prompt-chip" data-prompt="给全部页面右下角居中添加页码">加居中页码</span>
+        <span class="prompt-chip" data-prompt="去除文档中的全部水印并保持原排版">去除所有水印</span>
+        <span class="prompt-chip" data-prompt="按试卷与答案拆分为两个独立文件">拆分试卷与答案</span>
+        <span class="prompt-chip" data-prompt="对扫描页做文字图层重建（可搜索化 OCR）">OCR 可搜索化</span>
+        <span class="prompt-chip" data-prompt="顺时针旋转 90 度">顺时针旋转90°</span>
+      </div>
+      <textarea id="customText" placeholder="写下你的具体要求，例如：给每页加上页眉…"></textarea>
+      <button class="primary" style="width:100%;margin-top:10px" id="sendCustom">执行自定义要求</button>
     </details>
 
     <div class="status" id="statusText"></div>
-    <div class="row hidden" id="afterRow" style="margin-top:12px">
-      <button id="refreshStatus" style="flex:1">🔄 刷新状态</button>
-      <button id="newTask" style="flex:1">➕ 再处理一个</button>
+    
+    <div style="display:flex;gap:10px;margin-top:12px" class="hidden" id="afterRow">
+      <button id="refreshStatus" style="flex:1">刷新状态</button>
+      <button id="newTask" style="flex:1">处理新文件</button>
     </div>
+    
     <div id="artifactList"></div>
   </section>
 </main>
 
-<footer>只在你自己的网络（同 Wi-Fi 或 Tailscale）内可达</footer>
+<footer>
+  局域网点对点通信 · 不经过外部第三方云服务
+</footer>
 
+<!-- 确认弹窗 -->
 <div id="modal" class="hidden">
   <div class="sheet">
-    <h2 id="modalTitle"></h2>
+    <h2 id="modalTitle">确认操作</h2>
     <p class="hint" id="modalDesc"></p>
     <div id="modalFields"></div>
-    <div class="row">
+    <div class="modal-actions">
       <button id="modalCancel">取消</button>
       <button id="modalOk" class="primary">确认提交</button>
     </div>
   </div>
 </div>
 
-<!-- 诊断：默认隐藏；开关与复制都是纯内联事件，主脚本崩了也能用 -->
-<div id="debug" style="display:none">
-  <div id="debugBar">
-    <button type="button" id="copyAllBtn"
-      onclick="var d=document.getElementById('debug');if(window.__pbCopy){window.__pbCopy(d.innerText||d.textContent,this)}">复制全部</button>
-    <button type="button" id="closeDbgBtn"
-      onclick="var d=document.getElementById('debug');var b=document.getElementById('debugToggle');d.style.display='none';if(b){b.textContent='🐞 诊断'}">收起 ✕</button>
+<!-- 诊断底幕与侧边抽屉面板（点击遮罩或收起按钮关闭） -->
+<div id="debugBackdrop" onclick="window.__toggleDebug(false)"></div>
+<aside id="debug" aria-label="运行诊断面板">
+  <div id="debugHeader">
+    <div id="debugTitle">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+        <rect x="9" y="9" width="6" height="6"></rect>
+        <line x1="9" y1="1" x2="9" y2="4"></line>
+        <line x1="15" y1="1" x2="15" y2="4"></line>
+        <line x1="9" y1="20" x2="9" y2="23"></line>
+        <line x1="15" y1="20" x2="15" y2="23"></line>
+        <line x1="20" y1="9" x2="23" y2="9"></line>
+        <line x1="20" y1="14" x2="23" y2="14"></line>
+        <line x1="1" y1="9" x2="4" y2="9"></line>
+        <line x1="1" y1="14" x2="4" y2="14"></line>
+      </svg>
+      <span>诊断日志</span>
+    </div>
+    <div id="debugActions">
+      <button type="button" id="copyAllBtn" onclick="window.__copyAllLogs(this)">复制全部</button>
+      <button type="button" id="clearLogBtn" onclick="window.__clearLogs()">清空</button>
+      <button type="button" id="closeDbgBtn" onclick="window.__toggleDebug(false)">收起 ✕</button>
+    </div>
   </div>
-</div>
-<button id="debugToggle" type="button"
-  onclick="var d=document.getElementById('debug');var b=document.getElementById('debugToggle');var on=!d.style.display||d.style.display==='none';d.style.display=on?'block':'none';b.textContent=on?'🐞 收起':'🐞 诊断';">🐞 诊断</button>
+  <div id="debugLogs"></div>
+  <div id="debugFooter">
+    <span>轻触单条日志可快速复制</span>
+    <span id="dbgCount">0 条记录</span>
+  </div>
+</aside>
+
+<!-- 贴在屏幕右边缘的防误触极简小拉手（支持手机/电脑全端拖动避让、轻触侧滑展开） -->
+<button id="debugToggle" type="button" aria-label="诊断面板">
+  <span class="error-dot"></span>
+  <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="15 18 9 12 15 6"></polyline>
+  </svg>
+  <span class="tab-text">诊断</span>
+</button>
+
+<script>
+// 侧边贴边拉手：支持手机/电脑自由拖拽避让，轻点（无需长按）秒开
+(function () {
+  var b = document.getElementById('debugToggle');
+  if (!b) return;
+
+  // 1. 恢复用户之前拖动保存的位置偏好
+  try {
+    var savedTop = localStorage.getItem('pb_debug_top');
+    if (savedTop && /^\d+px$/u.test(savedTop)) {
+      b.style.top = savedTop;
+      b.style.transform = 'none';
+    }
+  } catch (e) {}
+
+  var startY = 0, currentTop = 0;
+  var moved = false;
+  var dragging = false;
+
+  function onMove(clientY) {
+    var dy = clientY - startY;
+    if (!moved && Math.abs(dy) > 5) {
+      moved = true;
+      dragging = true;
+      b.classList.add('dragging');
+    }
+    if (dragging) {
+      var nextTop = currentTop + dy;
+      var minTop = 50;
+      var maxTop = window.innerHeight - 70;
+      nextTop = Math.max(minTop, Math.min(maxTop, nextTop));
+      b.style.top = nextTop + 'px';
+      b.style.transform = 'none';
+    }
+  }
+
+  function onEnd() {
+    if (dragging) {
+      dragging = false;
+      b.classList.remove('dragging');
+      try { localStorage.setItem('pb_debug_top', b.style.top); } catch (e) {}
+    }
+    // 若发生了明显拖拽，微延迟复位以防拖拽松手时紧跟的 click 误触发
+    if (moved) {
+      setTimeout(function () { moved = false; }, 160);
+    }
+  }
+
+  // 触屏手势（手机端）：touchstart / touchmove / touchend
+  b.addEventListener('touchstart', function (e) {
+    if (e.touches && e.touches[0]) {
+      startY = e.touches[0].clientY;
+      currentTop = b.getBoundingClientRect().top;
+      moved = false;
+      dragging = false;
+    }
+  }, { passive: true });
+
+  b.addEventListener('touchmove', function (e) {
+    if (e.touches && e.touches[0]) {
+      onMove(e.touches[0].clientY);
+    }
+  }, { passive: true });
+
+  b.addEventListener('touchend', onEnd);
+  b.addEventListener('touchcancel', onEnd);
+
+  // 鼠标手势（桌面端）：mousedown / mousemove / mouseup
+  b.addEventListener('mousedown', function (e) {
+    if (e.button !== 0) return;
+    startY = e.clientY;
+    currentTop = b.getBoundingClientRect().top;
+    moved = false;
+    dragging = false;
+
+    function onMouseMove(me) {
+      onMove(me.clientY);
+    }
+    function onMouseUp() {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      onEnd();
+    }
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  });
+
+  // 标准点击事件：移动端快速轻点（Tap）或电脑鼠标单点（Click）立即触发！
+  b.addEventListener('click', function (e) {
+    if (moved) {
+      // 刚刚是在拖动避让，拦截本次误点击
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    // 轻点即开，无需长按！
+    window.__toggleDebug();
+  });
+})();
+</script>
 
 <script>
 (function () {
-  var PRESETS = __PRESETS__;
-  var VERSION = 'v8-redesign';
+  var PRESETS;
+  try {
+    PRESETS = __PRESETS__;
+  } catch (e) {
+    PRESETS = ['水印', '拆分'];
+  }
+
+  var VERSION = 'v9-clean';
   var tokenKey = 'pdf-helper-token';
   var taskKey = 'pdf-helper-task';
   var token = '';
@@ -204,12 +1161,17 @@ window.onerror = function (message, source, line, column) {
 
   function $(id) { return document.getElementById(id); }
   function show(el, yes) { if (!el) { return; } el.className = (el.className.replace(/ ?hidden/g, '') + (yes ? '' : ' hidden')).trim(); }
-  function setStatus(id, text, cls) { var el = $(id); if (!el) { return; } el.textContent = text; el.className = 'status ' + (cls || ''); }
+  function setStatus(id, text, cls) {
+    var el = $(id);
+    if (!el) { return; }
+    el.textContent = text;
+    el.className = 'status ' + (cls || '');
+  }
   function toArray(list) { var out = []; if (!list) { return out; } for (var i = 0; i < list.length; i += 1) { out.push(list[i]); } return out; }
 
   function dbg(line) {
     try {
-      var el = $('debug');
+      var el = $('debugLogs') || $('debug');
       if (!el) { return; }
       var row = document.createElement('div');
       row.className = 'dbg-row';
@@ -218,8 +1180,10 @@ window.onerror = function (message, source, line, column) {
       row.onclick = function () { if (window.__pbCopy) { window.__pbCopy(row.getAttribute('data-label'), row); } };
       el.appendChild(row);
       var rows = el.getElementsByClassName('dbg-row');
-      while (rows.length > 40) { el.removeChild(rows[0]); }
+      while (rows.length > 80) { el.removeChild(rows[0]); }
       el.scrollTop = el.scrollHeight;
+      var cnt = $('dbgCount');
+      if (cnt) { cnt.textContent = rows.length + ' 条记录'; }
     } catch (e) {}
   }
 
@@ -232,59 +1196,181 @@ window.onerror = function (message, source, line, column) {
     });
   }
 
+  var reAuthBtn = $('reAuthBtn');
+  if (reAuthBtn) {
+    reAuthBtn.onclick = function () {
+      show($('authCard'), true);
+      show($('workCard'), false);
+      show($('actionCard'), false);
+      $('netIndicator').className = 'status-pill';
+      $('verline').textContent = '未连接';
+    };
+  }
+
   function connect() {
-    setStatus('authStatus', '正在连接…');
+    setStatus('authStatus', '正在连接电脑端…', 'warn');
     api('/api/health').then(function (r) {
-      if (r.status !== 200) { setStatus('authStatus', '口令不对，或者电脑上的服务没开。', 'err'); return; }
+      if (r.status !== 200) {
+        setStatus('authStatus', '口令不正确，或电脑端服务未开启。', 'err');
+        $('netIndicator').className = 'status-pill';
+        $('verline').textContent = '连接失败';
+        return;
+      }
       try { localStorage.setItem(tokenKey, token); } catch (e) {}
-      show($('authCard'), false); show($('workCard'), true); show($('actionCard'), true);
+      show($('authCard'), false);
+      show($('workCard'), true);
+      show($('actionCard'), files.length > 0 || !!currentTask);
+      
+      $('netIndicator').className = 'status-pill online';
+      $('verline').textContent = '已连接';
+      
       presetFields = (r.body && r.body.presetFields) || {};
       renderPresets((r.body && r.body.presets) || PRESETS);
-    }).catch(function () { setStatus('authStatus', '连不上：检查手机和电脑是否在同一个网络。', 'err'); });
+      dbg('已连接成功，可用预设: ' + Object.keys(r.body && r.body.presets || {}).join(', '));
+    }).catch(function () {
+      setStatus('authStatus', '无法连接：请确认手机和电脑在同一 Wi-Fi 或已连接 Tailscale。', 'err');
+      $('netIndicator').className = 'status-pill';
+      $('verline').textContent = '离线';
+    });
   }
+
   $('saveToken').onclick = function () {
     token = $('tokenInput').value.trim();
-    if (token.length < 16) { setStatus('authStatus', '口令至少 16 位。', 'err'); return; }
+    if (token.length < 16) {
+      setStatus('authStatus', '口令至少需要 16 位。', 'err');
+      return;
+    }
     connect();
   };
 
-  // 选文件：只留 PDF 入口；已选文件可以单个删除
+  // 快捷 Prompt 标签填充
+  var chips = document.querySelectorAll('.prompt-chip');
+  for (var i = 0; i < chips.length; i += 1) {
+    chips[i].onclick = function () {
+      var p = this.getAttribute('data-prompt');
+      if (p) {
+        $('customText').value = p;
+        $('customText').focus();
+      }
+    };
+  }
+
+  // 拖拽上传
+  var dropZone = $('dropZone');
+  if (dropZone) {
+    ['dragenter', 'dragover'].forEach(function (eventName) {
+      dropZone.addEventListener(eventName, function (e) {
+        e.preventDefault(); e.stopPropagation();
+        dropZone.classList.add('dragover');
+      }, false);
+    });
+    ['dragleave', 'drop'].forEach(function (eventName) {
+      dropZone.addEventListener(eventName, function (e) {
+        e.preventDefault(); e.stopPropagation();
+        dropZone.classList.remove('dragover');
+      }, false);
+    });
+    dropZone.addEventListener('drop', function (e) {
+      var dt = e.dataTransfer;
+      if (dt && dt.files && dt.files.length > 0) {
+        addFiles(toArray(dt.files));
+      }
+    }, false);
+  }
+
+  function addFiles(picked) {
+    picked.forEach(function (file) {
+      if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {
+        setStatus('statusText', '仅支持 PDF 文件：已忽略 ' + file.name, 'warn');
+        return;
+      }
+      var dup = files.some(function (g) { return g.name === file.name && g.size === file.size; });
+      if (!dup) { files.push(file); }
+    });
+    renderFiles();
+  }
+
   function renderFiles() {
     var list = $('fileList');
     list.innerHTML = '';
     files.forEach(function (file, index) {
       var li = document.createElement('li');
+      
+      var ext = document.createElement('span');
+      ext.className = 'file-ext';
+      ext.textContent = 'PDF';
+      
       var name = document.createElement('span');
       name.className = 'name';
       name.textContent = file.name;
+      
       var size = document.createElement('span');
       size.className = 'size';
       size.textContent = Math.max(1, Math.round(file.size / 1024)) + ' KB';
+      
       var del = document.createElement('button');
       del.type = 'button';
       del.className = 'del';
-      del.textContent = '✕';
+      del.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
       del.setAttribute('aria-label', '删除 ' + file.name);
-      del.onclick = function () { files.splice(index, 1); renderFiles(); };
-      li.appendChild(name); li.appendChild(size); li.appendChild(del);
+      del.onclick = function () {
+        files.splice(index, 1);
+        renderFiles();
+      };
+      
+      li.appendChild(ext);
+      li.appendChild(name);
+      li.appendChild(size);
+      li.appendChild(del);
       list.appendChild(li);
     });
-    $('fileCount').textContent = files.length === 0
-      ? '还没有选择文件'
-      : ('已选 ' + files.length + ' 个' + (files.length > 1 ? '（会一起交给这次任务）' : ''));
+    
+    var countText = files.length === 0
+      ? '未选择文件'
+      : ('已选 ' + files.length + ' 份文件' + (files.length > 1 ? '（将合并处理）' : ''));
+    $('fileCount').textContent = countText;
+
+    // 只有在已选文件（或正在处理任务时），才显示操作指令区域
+    var isAuthed = !$('authCard') || $('authCard').classList.contains('hidden');
+    show($('actionCard'), isAuthed && (files.length > 0 || !!currentTask));
   }
+
   $('fileInput').onchange = function (event) {
     setTimeout(function () {
       var picked = toArray(event.target.files);
-      picked.forEach(function (file) {
-        var dup = files.some(function (g) { return g.name === file.name && g.size === file.size; });
-        if (!dup) { files.push(file); }
-      });
-      renderFiles();
-      if (picked.length === 0) { setStatus('statusText', '这次选择没有返回文件，再试一次。', 'err'); }
+      addFiles(picked);
+      if (picked.length === 0 && files.length === 0) {
+        setStatus('statusText', '未选择任何文件。', 'err');
+      }
     }, 0);
   };
   renderFiles();
+
+  // 根据预设名称返回纤细矢量图标与说明
+  function getPresetInfo(name) {
+    if (/水印/u.test(name)) {
+      return {
+        desc: '检测并擦除页面水印',
+        svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"></path></svg>'
+      };
+    }
+    if (/拆分/u.test(name)) {
+      return {
+        desc: '按试卷与答案拆分为两份文档',
+        svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="16" y1="3" x2="16" y2="21"></line><rect x="3" y="5" width="8" height="14" rx="1"></rect><rect x="18" y="5" width="3" height="14" rx="1"></rect></svg>'
+      };
+    }
+    if (/全处理/u.test(name)) {
+      return {
+        desc: '去除水印并拆分试卷答案',
+        svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>'
+      };
+    }
+    return {
+      desc: '按预设规则处理',
+      svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>'
+    };
+  }
 
   function renderPresets(names) {
     try {
@@ -293,17 +1379,50 @@ window.onerror = function (message, source, line, column) {
       var list = toArray(names || []);
       row.innerHTML = '';
       var hint = $('presetHint');
-      if (list.length === 0) { if (hint) { hint.textContent = '这台电脑还没配置预设，用下面的"自己写要求"。'; } return; }
-      if (hint) { hint.textContent = '点按钮后可以改产物文件名，确认才会开始。'; }
+      if (list.length === 0) {
+        if (hint) { hint.textContent = '未配置快捷预设，可在下方输入自定义要求。'; }
+        return;
+      }
+      if (hint) {
+        hint.textContent = '点击预设后将展示输出文件名确认单，确认后即刻开始。';
+      }
       list.forEach(function (name) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = name;
+        var info = getPresetInfo(name);
+        var b = document.createElement('div');
+        b.className = 'preset-item';
+        
+        var left = document.createElement('div');
+        left.className = 'preset-left';
+        
+        var sym = document.createElement('div');
+        sym.className = 'preset-symbol';
+        sym.innerHTML = info.svg;
+        
+        var textDiv = document.createElement('div');
+        textDiv.className = 'preset-text';
+        var title = document.createElement('div');
+        title.className = 'preset-name';
+        title.textContent = name;
+        var sub = document.createElement('div');
+        sub.className = 'preset-sub';
+        sub.textContent = info.desc;
+        textDiv.appendChild(title);
+        textDiv.appendChild(sub);
+        
+        left.appendChild(sym);
+        left.appendChild(textDiv);
+        
+        var act = document.createElement('div');
+        act.className = 'preset-action';
+        act.innerHTML = '<span>开始</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+        
+        b.appendChild(left);
+        b.appendChild(act);
         b.onclick = function () { openConfirm(name); };
         row.appendChild(b);
       });
-      dbg('已渲染预设按钮: ' + list.join(' / '));
-    } catch (e) { dbg('❌ 渲染预设失败: ' + e); }
+      dbg('已加载预设: ' + list.join(' / '));
+    } catch (e) { dbg('渲染预设失败: ' + e); }
   }
   renderPresets(PRESETS);
 
@@ -317,16 +1436,17 @@ window.onerror = function (message, source, line, column) {
   function openConfirm(instruction) {
     var isPreset = Object.prototype.hasOwnProperty.call(presetFields, instruction);
     var fields = isPreset ? toArray(presetFields[instruction]) : [];
-    $('modalTitle').textContent = isPreset ? instruction : '确认提交';
+    $('modalTitle').textContent = isPreset ? ('确认：' + instruction) : '确认任务';
     $('modalDesc').textContent = isPreset
-      ? '下面是产物文件名，可以改；留空就用默认命名。'
-      : '确认后立刻开始处理。';
+      ? '可自定义生成文件名，留空将按系统默认命名。'
+      : '确认后将立即提交电脑端处理。';
     var box = $('modalFields');
     box.innerHTML = '';
     if (fields.length === 0) {
       var p1 = document.createElement('p');
       p1.className = 'hint';
-      p1.textContent = String(instruction).slice(0, 160);
+      p1.style.cssText = 'background:var(--bg-subtle);padding:10px;border-radius:8px;border:1px solid var(--separator);';
+      p1.textContent = String(instruction).slice(0, 200);
       box.appendChild(p1);
     }
     fields.forEach(function (f) {
@@ -337,12 +1457,12 @@ window.onerror = function (message, source, line, column) {
       input.type = 'text';
       input.id = 'field_' + f.key;
       input.value = fileNameBase() + (f.suffix || '');
-      box.appendChild(label); box.appendChild(input);
+      box.appendChild(label);
+      box.appendChild(input);
     });
     $('modalOk').onclick = function () { confirmSubmit(instruction, fields); };
     $('modalCancel').onclick = function () { show($('modal'), false); };
     show($('modal'), true);
-    dbg('弹窗已打开：' + (isPreset ? instruction : '自定义') + '（输入框 ' + fields.length + ' 个）');
   }
 
   function confirmSubmit(instruction, fields) {
@@ -363,52 +1483,90 @@ window.onerror = function (message, source, line, column) {
   function readBase64(file) {
     return new Promise(function (resolve) {
       var reader = new FileReader();
-      reader.onload = function () { var s = String(reader.result); resolve(s.slice(s.indexOf(',') + 1)); };
+      reader.onload = function () {
+        var s = String(reader.result);
+        resolve(s.slice(s.indexOf(',') + 1));
+      };
       reader.onerror = function () { resolve(''); };
       reader.readAsDataURL(file);
     });
   }
+
   function setBusy(busy) {
-    var buttons = document.querySelectorAll('#presetRow button, #sendCustom');
-    for (var i = 0; i < buttons.length; i += 1) { buttons[i].disabled = !!busy; }
+    var buttons = document.querySelectorAll('#presetRow .preset-item, #sendCustom');
+    for (var i = 0; i < buttons.length; i += 1) {
+      if (busy) {
+        buttons[i].style.pointerEvents = 'none';
+        buttons[i].style.opacity = '0.5';
+      } else {
+        buttons[i].style.pointerEvents = '';
+        buttons[i].style.opacity = '';
+      }
+    }
     show($('afterRow'), !busy);
   }
 
   function startSubmit(instruction) {
     if (!instruction) { return; }
-    if (files.length === 0) { setStatus('statusText', '先在上面选择一份 PDF。', 'err'); return; }
+    if (files.length === 0) {
+      setStatus('statusText', '请先选择需要处理的 PDF 文件。', 'err');
+      return;
+    }
     setBusy(true);
-    setStatus('statusText', '⏳ 正在上传（' + files.length + ' 个文件）…', 'warn');
+    setStatus('statusText', '正在上传文件（' + files.length + ' 份）至电脑端…', 'warn');
     $('artifactList').innerHTML = '';
+    
     Promise.all(files.map(function (f) {
-      return readBase64(f).then(function (b64) { return { name: f.name, contentBase64: b64 }; });
+      return readBase64(f).then(function (b64) {
+        return { name: f.name, contentBase64: b64 };
+      });
     })).then(function (payload) {
-      return api('/api/task', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instruction: instruction, files: payload }) });
+      return api('/api/task', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction: instruction, files: payload })
+      });
     }).then(function (r) {
       if (r.status !== 202) {
         setBusy(false);
-        setStatus('statusText', r.status === 401 ? '口令不对。' : ('提交失败：' + JSON.stringify(r.body)), 'err');
+        setStatus('statusText', r.status === 401 ? '口令无效，请重新验证。' : ('任务提交失败：' + JSON.stringify(r.body)), 'err');
         return;
       }
       currentTask = r.body.taskId;
       try { localStorage.setItem(taskKey, currentTask); } catch (e) {}
-      setStatus('statusText', '✅ 已提交：' + String(instruction).split('\n')[0] + '\n任务号 ' + currentTask + '\n正在处理，通常 1~3 分钟，我每 2 秒自动刷新。', 'warn');
+      setStatus('statusText', '已进入处理队列：' + String(instruction).split('\n')[0] + '\n任务号：' + currentTask + '\n通常耗时 1~3 分钟，正在自动获取进度…', 'warn');
       startPolling();
-    }).catch(function (e) { setBusy(false); setStatus('statusText', '提交出错：' + e, 'err'); });
+    }).catch(function (e) {
+      setBusy(false);
+      setStatus('statusText', '连接异常：' + e, 'err');
+    });
   }
 
-  function schedulePoll(ms) { if (pollTimer) { clearTimeout(pollTimer); } pollTimer = setTimeout(poll, ms); }
-  function startPolling() { schedulePoll(400); }
+  function schedulePoll(ms) {
+    if (pollTimer) { clearTimeout(pollTimer); }
+    pollTimer = setTimeout(poll, ms);
+  }
+  function startPolling() { schedulePoll(300); }
+
   function poll() {
     if (!currentTask) { return; }
     var startedAt = Date.now();
     api('/api/task/' + encodeURIComponent(currentTask)).then(function (r) {
       if (r.status !== 200) { schedulePoll(3000); return; }
       var s = r.body.status;
-      var label = { queued: '⏳ 排队中', ok: '✅ 处理完成', timeout: '⏱️ 超时', error: '❌ 处理失败', running: '⚙️ 处理中' }[s] || s;
+      var label = {
+        queued: '排队中',
+        running: '正在处理',
+        ok: '处理完成',
+        error: '处理失败',
+        timeout: '运行超时'
+      }[s] || s;
+      
       var stamp = new Date().toLocaleTimeString();
-      setStatus('statusText', label + '\n任务号 ' + currentTask + (s === 'ok' ? '' : '\n（' + stamp + ' 更新，通常 1~3 分钟）'),
-        s === 'ok' ? 'ok' : ((s === 'error' || s === 'timeout') ? 'err' : 'warn'));
+      var msg = label + '\n任务号：' + currentTask + (s === 'ok' ? '' : '\n（' + stamp + ' 状态更新）');
+      
+      setStatus('statusText', msg, s === 'ok' ? 'ok' : ((s === 'error' || s === 'timeout') ? 'err' : 'warn'));
+      
       if (s === 'ok' || s === 'error' || s === 'timeout') {
         if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
         setBusy(false);
@@ -419,47 +1577,98 @@ window.onerror = function (message, source, line, column) {
       }
     }).catch(function () { schedulePoll(5000); });
   }
+
   function renderArtifacts(list) {
     var box = $('artifactList');
     box.innerHTML = '';
-    if (list.length === 0) { box.innerHTML = '<p class="hint">这次没有可下载的产物（详情见飞书回执）。</p>'; return; }
-    var head = document.createElement('p');
-    head.className = 'hint';
-    head.textContent = '产物 ' + list.length + ' 个 —— 点一下下载，然后就能在微信里转发：';
+    if (list.length === 0) {
+      box.innerHTML = '<p class="hint">未生成文件输出（请查看飞书通知）。</p>';
+      return;
+    }
+    
+    var head = document.createElement('div');
+    head.style.cssText = 'font-size:13px;font-weight:600;color:var(--success);margin-bottom:6px;';
+    head.textContent = '处理完成，可下载文件（' + list.length + ' 份）：';
     box.appendChild(head);
+    
     list.forEach(function (path, index) {
-      var a = document.createElement('a');
-      a.className = 'dl';
-      a.href = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask)
-        + '&index=' + index + '&name=' + encodeURIComponent(String(path).split('/').pop());
-      a.textContent = String(path).split('/').pop();
-      box.appendChild(a);
+      var fileName = String(path).split('/').pop();
+      var item = document.createElement('div');
+      item.className = 'artifact-item';
+      
+      var left = document.createElement('div');
+      left.style.minWidth = '0';
+      var nameEl = document.createElement('div');
+      nameEl.className = 'artifact-title';
+      nameEl.textContent = fileName;
+      var subEl = document.createElement('div');
+      subEl.className = 'artifact-desc';
+      subEl.textContent = '下载后可直接在手机中转发';
+      left.appendChild(nameEl);
+      left.appendChild(subEl);
+      
+      var dl = document.createElement('a');
+      dl.className = 'dl-button';
+      dl.href = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask)
+        + '&index=' + index + '&name=' + encodeURIComponent(fileName);
+      dl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> 下载';
+      
+      item.appendChild(left);
+      item.appendChild(dl);
+      box.appendChild(item);
     });
-    box.insertAdjacentHTML('beforeend', '<p class="hint">飞书群里也会收到同样一份。</p>');
+    
+    var tip = document.createElement('p');
+    tip.className = 'hint';
+    tip.style.cssText = 'font-size:12px;color:var(--label-tertiary);margin-top:10px;';
+    tip.textContent = '提示：在手机浏览器下载文件后，在系统的下载管理中点击「分享」即可直接发送至微信或飞书。';
+    box.appendChild(tip);
   }
+
   $('refreshStatus').onclick = function () { poll(); };
   $('newTask').onclick = function () {
-    currentTask = ''; files = []; renderFiles();
-    setStatus('statusText', ''); $('artifactList').innerHTML = '';
+    currentTask = '';
+    files = [];
+    renderFiles();
+    setStatus('statusText', '');
+    $('artifactList').innerHTML = '';
     $('customText').value = '';
     try { localStorage.removeItem(taskKey); } catch (e) {}
   };
-  document.addEventListener('visibilitychange', function () { if (!document.hidden && currentTask) { poll(); } });
-  window.addEventListener('focus', function () { if (currentTask) { poll(); } });
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && currentTask) { poll(); }
+  });
+  window.addEventListener('focus', function () {
+    if (currentTask) { poll(); }
+  });
 
   $('sendCustom').onclick = function () {
     var text = $('customText').value.trim();
-    if (!text) { setStatus('statusText', '先写一句要求，或者直接点上面的按钮。', 'err'); return; }
+    if (!text) {
+      setStatus('statusText', '请输入自定义处理要求。', 'err');
+      return;
+    }
     openConfirm(text);
   };
 
   dbg('页面 ' + VERSION + ' 已加载 ' + new Date().toLocaleTimeString());
   dbg('可用预设：' + toArray(PRESETS).join(' / '));
+
   try {
     var saved = localStorage.getItem(tokenKey);
-    if (saved && saved.length >= 16) { token = saved; $('tokenInput').value = saved; connect(); }
+    if (saved && saved.length >= 16) {
+      token = saved;
+      $('tokenInput').value = saved;
+      connect();
+    }
     var lastTask = localStorage.getItem(taskKey);
-    if (lastTask) { currentTask = lastTask; setBusy(true); setStatus('statusText', '正在查询上一个任务 ' + lastTask + ' …', 'warn'); startPolling(); }
+    if (lastTask) {
+      currentTask = lastTask;
+      setBusy(true);
+      setStatus('statusText', '正在恢复上一任务状态 ' + lastTask + ' …', 'warn');
+      startPolling();
+    }
   } catch (e) {}
 })();
 </script>
