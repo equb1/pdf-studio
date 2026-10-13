@@ -3,46 +3,75 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#2563eb">
+<meta name="theme-color" content="#1d4ed8">
 <title>PDF 助手</title>
 <style>
-  :root { --blue:#2563eb; --gray:#6b7280; --line:#e5e7eb; --bg:#f8fafc; }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  body { margin:0; font: 16px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background:var(--bg); color:#111827; }
-  header { background:var(--blue); color:#fff; padding:16px; }
-  header h1 { margin:0; font-size:18px; font-weight:600; }
-  header p { margin:4px 0 0; font-size:13px; opacity:.9; }
-  main { padding:16px; max-width:640px; margin:0 auto; }
-  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
-  .card h2 { margin:0 0 10px; font-size:15px; font-weight:600; }
-  .hint { font-size:13px; color:var(--gray); margin:6px 0 0; }
-  .row { display:flex; flex-wrap:wrap; gap:10px; }
-  button, .filebtn { font:16px/1 inherit; padding:14px 16px; border-radius:10px; border:1px solid var(--line); background:#fff; color:#111827; min-height:48px; }
-  button.primary { background:var(--blue); color:#fff; border-color:var(--blue); width:100%; font-weight:600; }
-  button.secondary { color:var(--gray); font-weight:400; }
-  button.preset { flex:1 1 30%; font-weight:700; padding:18px 10px; font-size:17px; border:2px solid var(--blue); color:var(--blue); }
-  button:disabled { opacity:.5; }
-  input[type=password], input[type=text], textarea {
-    width:100%; font:16px/1.4 inherit; padding:12px; border:1px solid var(--line); border-radius:10px; background:#fff; color:#111827;
+  :root {
+    --blue:#2563eb; --blue-dark:#1d4ed8; --ink:#0f172a; --sub:#64748b;
+    --line:#e2e8f0; --bg:#f1f5f9; --card:#fff; --ok:#047857; --err:#b91c1c; --warn:#b45309;
   }
-  textarea { min-height:88px; resize:vertical; }
-  .filebtn { display:block; text-align:center; font-weight:600; flex:1 1 45%; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; padding:0; }
+  body {
+    font:16px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background:var(--bg); color:var(--ink); padding-bottom:96px;
+    -webkit-font-smoothing:antialiased;
+  }
+  header { background:linear-gradient(135deg, var(--blue), var(--blue-dark)); color:#fff; padding:22px 18px 26px; border-radius:0 0 22px 22px; }
+  header h1 { margin:0; font-size:20px; font-weight:700; }
+  header p { margin:6px 0 0; font-size:13px; opacity:.9; }
+  header .ver { display:inline-block; margin-top:10px; font-size:11px; padding:2px 8px; border-radius:999px; background:rgba(255,255,255,.18); }
+  main { padding:14px; max-width:680px; margin:0 auto; }
+  .card { background:var(--card); border-radius:16px; padding:16px; margin-bottom:14px; box-shadow:0 1px 2px rgba(15,23,42,.06), 0 10px 26px -20px rgba(15,23,42,.35); }
+  .card > h2 { margin:0 0 14px; font-size:15px; font-weight:700; display:flex; align-items:center; gap:8px; }
+  .step { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:var(--blue); color:#fff; font-size:12px; font-weight:700; flex:0 0 auto; }
+  .hint { font-size:13px; color:var(--sub); margin:10px 0 0; }
+  .row { display:flex; gap:10px; }
+  button { font:inherit; border-radius:12px; border:1px solid var(--line); background:#fff; color:var(--ink); padding:14px 16px; min-height:50px; cursor:pointer; }
+  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; font-weight:700; width:100%; }
+  button.primary:disabled { opacity:.5; }
+  .pick { display:flex; align-items:center; justify-content:center; gap:10px; border:2px dashed #bfdbfe; background:#eff6ff; color:var(--blue-dark); border-radius:14px; padding:22px 16px; font-weight:700; cursor:pointer; }
   input[type=file] { display:none; }
-  .files { margin:10px 0 0; font-size:14px; color:#111827; }
-  .files li { margin:2px 0; }
-  .status { margin-top:12px; font-size:14px; white-space:pre-wrap; }
-  .ok { color:#047857; } .err { color:#b91c1c; } .warn { color:#b45309; }
-  a.dl { display:block; padding:14px 16px; margin:8px 0 0; border:1px solid var(--blue); border-radius:10px; color:var(--blue); text-decoration:none; font-weight:600; word-break:break-all; }
-  footer { text-align:center; color:var(--gray); font-size:12px; padding:8px 16px 28px; }
+  .files { list-style:none; margin:14px 0 0; padding:0; }
+  .files li { display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; margin-bottom:8px; font-size:14px; }
+  .files .name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .files .size { color:var(--sub); font-size:12px; flex:0 0 auto; }
+  .files .del { flex:0 0 auto; width:32px; height:32px; min-height:32px; padding:0; border-radius:50%; color:var(--err); border-color:#fecaca; background:#fef2f2; font-size:15px; line-height:1; }
+  .count { font-size:13px; color:var(--sub); margin:12px 0 0; }
+  .presets { display:flex; flex-direction:column; gap:10px; }
+  .presets button { width:100%; text-align:left; font-weight:700; font-size:16px; border:1.5px solid #bfdbfe; color:var(--blue-dark); background:#f8fbff; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .presets button::after { content:'›'; font-size:20px; color:#93c5fd; }
+  details.more { margin-top:14px; border-top:1px solid var(--line); padding-top:12px; }
+  details.more summary { cursor:pointer; color:var(--sub); font-size:14px; list-style:none; }
+  details.more summary::-webkit-details-marker { display:none; }
+  details.more summary::before { content:'＋ '; }
+  textarea { width:100%; font:15px/1.5 inherit; padding:12px; border:1px solid var(--line); border-radius:12px; margin-top:10px; min-height:88px; resize:vertical; color:var(--ink); }
+  input[type=password], input[type=text] { width:100%; font:16px/1.4 inherit; padding:13px; border:1px solid var(--line); border-radius:12px; color:var(--ink); background:#fff; }
+  .status { margin-top:14px; font-size:14px; white-space:pre-wrap; color:var(--sub); }
+  .status.ok { color:var(--ok); } .status.err { color:var(--err); } .status.warn { color:var(--warn); }
+  .dl { display:flex; align-items:center; gap:10px; margin-top:10px; padding:14px 16px; border:1.5px solid var(--blue); border-radius:12px; color:var(--blue-dark); text-decoration:none; font-weight:700; word-break:break-all; background:#f8fbff; }
+  .dl::before { content:'⬇︎'; font-size:18px; }
+  #modal { position:fixed; inset:0; background:rgba(15,23,42,.5); z-index:100; display:flex; align-items:flex-end; }
+  #modal .sheet { background:#fff; width:100%; max-width:680px; margin:0 auto; border-radius:20px 20px 0 0; padding:18px 16px 22px; max-height:88vh; overflow:auto; }
+  #modal h2 { margin:0 0 4px; font-size:17px; }
+  #modal label { display:block; font-size:13px; color:var(--sub); margin:14px 0 6px; }
+  #modal .row { margin-top:18px; }
+  #modal .row button { flex:1; }
+  #modal .row button.primary { flex:2; }
   .hidden { display:none !important; }
+  footer { text-align:center; color:var(--sub); font-size:12px; padding:6px 16px 26px; }
+  #debug { position:fixed; left:0; right:0; bottom:64px; z-index:99; background:#0f172a; color:#f8fafc; font:12px/1.5 ui-monospace, Menlo, monospace; padding:10px 12px; max-height:42vh; overflow:auto; white-space:pre-wrap; }
+  #debug .dbg-row { cursor:pointer; padding:1px 0; }
+  #debugBar { float:right; display:flex; gap:6px; margin:0 0 6px 8px; }
+  #debugBar button { min-height:32px; padding:4px 10px; font-size:12px; font-weight:600; border-radius:8px; }
+  #debugToggle { position:fixed; right:12px; bottom:12px; z-index:101; min-height:44px; padding:10px 16px; border-radius:999px; background:#fff; box-shadow:0 4px 14px -4px rgba(15,23,42,.4); font-size:13px; font-weight:600; color:var(--sub); }
 </style>
 </head>
 <body>
+
 <script>
-// 页面错误收集器：**放在最前面**，任何后续脚本出错都能被记下来并显示出来
-// （这几轮我吃了"JS 静默中断、页面看起来正常"的亏，所以先保证错误一定能被看到）
+// 页面错误收集器（放在最前面）+ 通用复制：保证任何脚本出错都能被看到、被一键复制
 window.__pbErrors = [];
-// 通用复制：优先剪贴板 API；老安卓/受限浏览器回退到 execCommand（实测必须留这条兜底）
 window.__pbCopy = function (text, el) {
   var flash = function () {
     if (!el) { return; }
@@ -71,7 +100,6 @@ window.__pbCopy = function (text, el) {
   } catch (e) {}
   return legacy();
 };
-
 window.onerror = function (message, source, line, column) {
   try {
     window.__pbErrors.push(String(message) + ' @' + line + ':' + column);
@@ -82,11 +110,11 @@ window.onerror = function (message, source, line, column) {
       row.className = 'dbg-row';
       row.setAttribute('data-label', '⚠️ 页面出错：' + message + ' @' + line + ':' + column);
       row.textContent = '⚠️ 页面出错：' + message + ' @' + line + ':' + column;
-      row.style.cssText = 'cursor:pointer;color:#fca5a5';
-      row.onclick = function () { if (window.__pbCopy) { window.__pbCopy(row.getAttribute('data-label'), row); } };
+      row.style.color = '#fca5a5';
+      row.onclick = function () { window.__pbCopy(row.getAttribute('data-label'), row); };
       panel.appendChild(row);
       var b = document.getElementById('debugToggle');
-      if (b) { b.textContent = '\ud83d\udc1e 收起（有错误）'; }
+      if (b) { b.textContent = '🐞 收起（有错误）'; }
     }
   } catch (e) {}
   return false;
@@ -95,81 +123,98 @@ window.onerror = function (message, source, line, column) {
 
 <header>
   <h1>PDF 助手</h1>
-  <p>选文件 → 点一个按钮 → 处理好的文件回这里（也会发到飞书）</p>
-  <p id="verline" style="margin:2px 0 0;font-size:12px;opacity:.85">页面版本 v7-copy</p>
+  <p>选一份 PDF → 点一个按钮 → 处理好的文件回到这里</p>
+  <span class="ver" id="verline">页面版本 v8-redesign</span>
 </header>
+
 <main>
   <section class="card" id="authCard">
-    <h2>先填一次访问口令</h2>
+    <h2><span class="step">1</span>填一次访问口令</h2>
     <input type="password" id="tokenInput" placeholder="访问口令（至少 16 位）" autocomplete="off">
-    <p class="hint">口令只存在这台手机上（浏览器本地），用来让你的电脑认得出是你。</p>
-    <div class="row" style="margin-top:10px"><button class="primary" id="saveToken">保存并连接</button></div>
+    <p class="hint">口令只存在这台手机里，用来让电脑认得出是你。</p>
+    <div class="row" style="margin-top:12px"><button class="primary" id="saveToken">保存并连接</button></div>
     <div class="status" id="authStatus"></div>
   </section>
 
   <section class="card hidden" id="workCard">
-    <h2>1. 选文件</h2>
-    <div class="row">
-      <label class="filebtn" for="anyInput">📁 任意文件</label>
-      <label class="filebtn" for="fileInput">📄 PDF</label>
-      <label class="filebtn" for="imageInput">🖼 图片</label>
-    </div>
-    <!-- 三个入口，都不带 accept 的"任意文件"是兜底：安卓上各种选择器差异极大，
-         不带 accept 更能出现"文件/浏览"；**都不加 multiple**（安卓多选常返回空列表 ✗）。 -->
-    <input type="file" id="anyInput">
+    <h2><span class="step">1</span>选择 PDF</h2>
+    <label class="pick" for="fileInput">📄 选择 PDF 文件</label>
     <input type="file" id="fileInput" accept="application/pdf,.pdf">
-    <input type="file" id="imageInput" accept="image/*">
+    <p class="count" id="fileCount">还没有选择文件</p>
     <ul class="files" id="fileList"></ul>
-    <div class="status" id="fileHintExtra"></div>
-    <p class="hint" id="fileHint">只看到"相册"没有"文件"？<br>
-      · 在选择器**右上角/更多**里选「文件 / 文档 / 浏览」；<br>
-      · 或把文件先「保存到手机 → 文件」，再从这里选；<br>
-      · 微信内置浏览器限制最多，建议用**系统浏览器（Chrome）**打开本页。</p>
   </section>
 
   <section class="card hidden" id="actionCard">
-    <h2>2. 点一个按钮开始处理</h2>
-    <div class="row" id="presetRow"></div>
+    <h2><span class="step">2</span>开始处理</h2>
+    <div class="presets" id="presetRow"></div>
     <p class="hint" id="presetHint"></p>
 
-    <details style="margin-top:14px">
-      <summary style="cursor:pointer;color:var(--gray);font-size:14px">我要自己写要求（可选）</summary>
-      <textarea id="customText" placeholder="例如：给这份文件的第 1 页居中加页码"></textarea>
-      <button id="sendCustom" style="width:100%;margin-top:8px">按我写的要求处理</button>
+    <details class="more">
+      <summary>我要自己写要求</summary>
+      <textarea id="customText" placeholder="例如：给这份文件的每页右下角加页码"></textarea>
+      <button style="width:100%;margin-top:10px" id="sendCustom">按我写的要求处理</button>
     </details>
 
-    <!-- 反馈紧跟按钮：点完立刻能看到"正在上传 / 已提交 / 进度"（之前放在下面的卡片里，很容易以为没反应 ✗） -->
     <div class="status" id="statusText"></div>
-    <div class="row" style="margin-top:8px">
-      <button id="refreshStatus" class="hidden" style="flex:1">🔄 刷新状态</button>
-      <button id="newTask" class="hidden" style="flex:1">➕ 再处理一个</button>
+    <div class="row hidden" id="afterRow" style="margin-top:12px">
+      <button id="refreshStatus" style="flex:1">🔄 刷新状态</button>
+      <button id="newTask" style="flex:1">➕ 再处理一个</button>
     </div>
     <div id="artifactList"></div>
   </section>
-
 </main>
-<footer>本机服务 · 只在内网/Tailscale 内可达</footer>
+
+<footer>只在你自己的网络（同 Wi-Fi 或 Tailscale）内可达</footer>
+
+<div id="modal" class="hidden">
+  <div class="sheet">
+    <h2 id="modalTitle"></h2>
+    <p class="hint" id="modalDesc"></p>
+    <div id="modalFields"></div>
+    <div class="row">
+      <button id="modalCancel">取消</button>
+      <button id="modalOk" class="primary">确认提交</button>
+    </div>
+  </div>
+</div>
+
+<!-- 诊断：默认隐藏；开关与复制都是纯内联事件，主脚本崩了也能用 -->
+<div id="debug" style="display:none">
+  <div id="debugBar">
+    <button type="button" id="copyAllBtn"
+      onclick="var d=document.getElementById('debug');if(window.__pbCopy){window.__pbCopy(d.innerText||d.textContent,this)}">复制全部</button>
+    <button type="button" id="closeDbgBtn"
+      onclick="var d=document.getElementById('debug');var b=document.getElementById('debugToggle');d.style.display='none';if(b){b.textContent='🐞 诊断'}">收起 ✕</button>
+  </div>
+</div>
+<button id="debugToggle" type="button"
+  onclick="var d=document.getElementById('debug');var b=document.getElementById('debugToggle');var on=!d.style.display||d.style.display==='none';d.style.display=on?'block':'none';b.textContent=on?'🐞 收起':'🐞 诊断';">🐞 诊断</button>
+
 <script>
 (function () {
   var PRESETS = __PRESETS__;
+  var VERSION = 'v8-redesign';
   var tokenKey = 'pdf-helper-token';
+  var taskKey = 'pdf-helper-task';
   var token = '';
   var files = [];
   var currentTask = '';
+  var presetFields = {};
   var pollTimer = null;
 
-  var VERSION = 'v7-copy';
   function $(id) { return document.getElementById(id); }
+  function show(el, yes) { if (!el) { return; } el.className = (el.className.replace(/ ?hidden/g, '') + (yes ? '' : ' hidden')).trim(); }
+  function setStatus(id, text, cls) { var el = $(id); if (!el) { return; } el.textContent = text; el.className = 'status ' + (cls || ''); }
+  function toArray(list) { var out = []; if (!list) { return out; } for (var i = 0; i < list.length; i += 1) { out.push(list[i]); } return out; }
+
   function dbg(line) {
     try {
       var el = $('debug');
       if (!el) { return; }
-      // 每行单独一个元素：点一下就复制这一行（方便用户把报错直接发给我）
       var row = document.createElement('div');
       row.className = 'dbg-row';
       row.setAttribute('data-label', String(line));
       row.textContent = String(line);
-      row.style.cssText = 'cursor:pointer;padding:1px 0';
       row.onclick = function () { if (window.__pbCopy) { window.__pbCopy(row.getAttribute('data-label'), row); } };
       el.appendChild(row);
       var rows = el.getElementsByClassName('dbg-row');
@@ -177,12 +222,6 @@ window.onerror = function (message, source, line, column) {
       el.scrollTop = el.scrollHeight;
     } catch (e) {}
   }
-  window.onerror = function (msg, src, line, col) { dbg('❌ JS 错误: ' + msg + ' @' + line + ':' + col); };
-  dbg('页面 ' + VERSION + ' 已加载 ' + new Date().toLocaleTimeString());
-  // 元素不存在时**不能抛异常**：实测删掉一个卡片后，残留的
-  // 把后面的"渲染预设按钮"整段跳过，页面就变成"有卡片、没按钮" ✗。
-  function show(el, yes) { if (!el) { return; } el.className = el.className.replace(/ ?hidden/, '') + (yes ? '' : ' hidden'); }
-  function setStatus(id, text, cls) { var el = $(id); if (!el) { dbg('⚠️ 找不到状态位 #' + id); return; } el.textContent = text; el.className = 'status ' + (cls || ''); }
 
   function api(path, options) {
     options = options || {};
@@ -193,96 +232,133 @@ window.onerror = function (message, source, line, column) {
     });
   }
 
-  /** 渲染预设按钮。页面注入的 PRESETS 就能渲染，所以**加载时立刻显示**，不必等网络 ✓ */
-  function renderPresets(names) {
-    try {
-      var row = $('presetRow');
-      if (!row) { dbg('⚠️ 找不到 #presetRow'); return; }
-      var list = toArray(names || []);
-      row.innerHTML = '';
-      var hint = $('presetHint');
-      if (list.length === 0) {
-        if (hint) { hint.textContent = '（这台电脑还没配预设，用下面的输入框说要求即可）'; }
-        return;
-      }
-      if (hint) { hint.textContent = '按钮就是预设任务，点一下就用它处理你选的文件。'; }
-      list.forEach(function (name) {
-        var b = document.createElement('button');
-        b.className = 'preset'; b.type = 'button'; b.textContent = name;
-        b.onclick = function () { submit(name); };
-        row.appendChild(b);
-      });
-      dbg('已渲染预设按钮: ' + list.join(' / '));
-    } catch (e) { dbg('❌ 渲染预设按钮失败: ' + e); }
-  }
-
   function connect() {
     setStatus('authStatus', '正在连接…');
     api('/api/health').then(function (r) {
-      if (r.status !== 200) { setStatus('authStatus', '口令不对，或者服务没开。再试一次。', 'err'); return; }
+      if (r.status !== 200) { setStatus('authStatus', '口令不对，或者电脑上的服务没开。', 'err'); return; }
       try { localStorage.setItem(tokenKey, token); } catch (e) {}
       show($('authCard'), false); show($('workCard'), true); show($('actionCard'), true);
-      // 服务器返回的预设为准（配置改了不用刷新页面）；拿不到就用页面注入的那份
+      presetFields = (r.body && r.body.presetFields) || {};
       renderPresets((r.body && r.body.presets) || PRESETS);
-    }).catch(function () { setStatus('authStatus', '连不上：检查手机和电脑是否在同一个 Tailscale 网络里。', 'err'); });
+    }).catch(function () { setStatus('authStatus', '连不上：检查手机和电脑是否在同一个网络。', 'err'); });
   }
+  $('saveToken').onclick = function () {
+    token = $('tokenInput').value.trim();
+    if (token.length < 16) { setStatus('authStatus', '口令至少 16 位。', 'err'); return; }
+    connect();
+  };
 
-  $('saveToken').onclick = function () { token = $('tokenInput').value.trim(); if (token.length < 16) { setStatus('authStatus', '口令至少 16 位。', 'err'); return; } connect(); };
-
-  /** 把 FileList / 类数组**转成真数组**：安卓 Chrome 的 FileList 没有 forEach（实测报错 ✗）。 */
-  function toArray(list) {
-    var out = [];
-    if (!list) { return out; }
-    for (var i = 0; i < list.length; i += 1) { out.push(list[i]); }
-    return out;
-  }
-
-  function addFiles(list) {
-    toArray(list).forEach(function (f) {
-      // 同一个文件别重复加（重复选同一个不会报错，但会让上传变大）
-      var dup = files.some(function (g) { return g.name === f.name && g.size === f.size; });
-      if (!dup) { files.push(f); }
-    });
-    var box = $('fileList'); box.innerHTML = '';
-    if (files.length === 0) { box.innerHTML = '<li>还没选文件</li>'; return; }
-    files.forEach(function (f, index) {
+  // 选文件：只留 PDF 入口；已选文件可以单个删除
+  function renderFiles() {
+    var list = $('fileList');
+    list.innerHTML = '';
+    files.forEach(function (file, index) {
       var li = document.createElement('li');
-      li.textContent = (index + 1) + '. ' + f.name + '（' + Math.max(1, Math.round(f.size / 1024)) + ' KB）';
-      box.appendChild(li);
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = file.name;
+      var size = document.createElement('span');
+      size.className = 'size';
+      size.textContent = Math.max(1, Math.round(file.size / 1024)) + ' KB';
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'del';
+      del.textContent = '✕';
+      del.setAttribute('aria-label', '删除 ' + file.name);
+      del.onclick = function () { files.splice(index, 1); renderFiles(); };
+      li.appendChild(name); li.appendChild(size); li.appendChild(del);
+      list.appendChild(li);
     });
-    var clear = document.createElement('button');
-    clear.type = 'button'; clear.textContent = '清空已选';
-    clear.onclick = function () { files = []; addFiles([]); };
-    box.appendChild(clear);
+    $('fileCount').textContent = files.length === 0
+      ? '还没有选择文件'
+      : ('已选 ' + files.length + ' 个' + (files.length > 1 ? '（会一起交给这次任务）' : ''));
+  }
+  $('fileInput').onchange = function (event) {
+    setTimeout(function () {
+      var picked = toArray(event.target.files);
+      picked.forEach(function (file) {
+        var dup = files.some(function (g) { return g.name === file.name && g.size === file.size; });
+        if (!dup) { files.push(file); }
+      });
+      renderFiles();
+      if (picked.length === 0) { setStatus('statusText', '这次选择没有返回文件，再试一次。', 'err'); }
+    }, 0);
+  };
+  renderFiles();
+
+  function renderPresets(names) {
+    try {
+      var row = $('presetRow');
+      if (!row) { return; }
+      var list = toArray(names || []);
+      row.innerHTML = '';
+      var hint = $('presetHint');
+      if (list.length === 0) { if (hint) { hint.textContent = '这台电脑还没配置预设，用下面的"自己写要求"。'; } return; }
+      if (hint) { hint.textContent = '点按钮后可以改产物文件名，确认才会开始。'; }
+      list.forEach(function (name) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = name;
+        b.onclick = function () { openConfirm(name); };
+        row.appendChild(b);
+      });
+      dbg('已渲染预设按钮: ' + list.join(' / '));
+    } catch (e) { dbg('❌ 渲染预设失败: ' + e); }
+  }
+  renderPresets(PRESETS);
+
+  function fileNameBase() {
+    if (files.length === 0) { return '产物'; }
+    var name = String(files[0].name).replace(/\.[^.]+$/, '');
+    var cleaned = name.replace(/[（(]答案[)）]\s*$/u, '').replace(/\+?\s*答案\s*$/u, '').trim();
+    return cleaned !== '' ? cleaned : name;
   }
 
-  function pick(ids) {
-    ids.forEach(function (id) {
-      var el = $(id);
-      if (!el) { return; }
-      el.onchange = function (event) {
-        // 三个坑都在这里：
-        // ① 不要立刻 `value = ''`（安卓上会把 FileList 清空，取到空列表 ✗）；
-        // ② 选择器刚返回时不一定已经填好，**延迟一拍**再读更稳；
-        // ③ 空选择要**明确告诉用户**，不能静默显示"还没选文件"（会以为操作失败 ✗）。
-        dbg('输入框 ' + id + ' 触发了 change');
-        setTimeout(function () {
-          var list = event.target.files;
-          dbg('  → 收到 ' + ((list && list.length) || 0) + ' 个文件' + (list && list[0] ? '：' + list[0].name : ''));
-          if (!list || list.length === 0) {
-            setStatus('fileHintExtra', '⚠️ 这次选择没有返回文件：换一个入口试试（📁 任意文件），'
-              + '或先在文件 App 里把文件"保存到手机/文件"，再回来选。微信内置浏览器限制最多，建议用 Chrome。', 'err');
-            return;
-          }
-          setStatus('fileHintExtra', '');
-          addFiles(list);
-        }, 0);
-      };
+  function openConfirm(instruction) {
+    var isPreset = Object.prototype.hasOwnProperty.call(presetFields, instruction);
+    var fields = isPreset ? toArray(presetFields[instruction]) : [];
+    $('modalTitle').textContent = isPreset ? instruction : '确认提交';
+    $('modalDesc').textContent = isPreset
+      ? '下面是产物文件名，可以改；留空就用默认命名。'
+      : '确认后立刻开始处理。';
+    var box = $('modalFields');
+    box.innerHTML = '';
+    if (fields.length === 0) {
+      var p1 = document.createElement('p');
+      p1.className = 'hint';
+      p1.textContent = String(instruction).slice(0, 160);
+      box.appendChild(p1);
+    }
+    fields.forEach(function (f) {
+      var label = document.createElement('label');
+      label.textContent = f.label;
+      label.setAttribute('for', 'field_' + f.key);
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.id = 'field_' + f.key;
+      input.value = fileNameBase() + (f.suffix || '');
+      box.appendChild(label); box.appendChild(input);
     });
+    $('modalOk').onclick = function () { confirmSubmit(instruction, fields); };
+    $('modalCancel').onclick = function () { show($('modal'), false); };
+    show($('modal'), true);
+    dbg('弹窗已打开：' + (isPreset ? instruction : '自定义') + '（输入框 ' + fields.length + ' 个）');
   }
-  try { pick(['anyInput', 'fileInput', 'imageInput']); dbg('已绑定选择入口 anyInput/fileInput/imageInput'); } catch (e) { dbg('❌ 绑定失败: ' + e); }
-  addFiles([]);
-  renderPresets(PRESETS);   // 立刻显示按钮：即使还没填口令、或网络慢，也看得到
+
+  function confirmSubmit(instruction, fields) {
+    var text = instruction;
+    if (fields.length > 0) {
+      var lines = [];
+      fields.forEach(function (f) {
+        var el = $('field_' + f.key);
+        var value = el ? String(el.value).trim() : '';
+        if (value !== '') { lines.push(f.label + '：' + value); }
+      });
+      if (lines.length > 0) { text = instruction + '\n\n【本次命名要求（以此为准）】\n' + lines.join('\n'); }
+    }
+    show($('modal'), false);
+    startSubmit(text);
+  }
 
   function readBase64(file) {
     return new Promise(function (resolve) {
@@ -292,23 +368,21 @@ window.onerror = function (message, source, line, column) {
       reader.readAsDataURL(file);
     });
   }
-
   function setBusy(busy) {
     var buttons = document.querySelectorAll('#presetRow button, #sendCustom');
     for (var i = 0; i < buttons.length; i += 1) { buttons[i].disabled = !!busy; }
-    show($('refreshStatus'), !busy);
-    show($('newTask'), !busy);
+    show($('afterRow'), !busy);
   }
 
-  function submit(instruction) {
+  function startSubmit(instruction) {
     if (!instruction) { return; }
-    // ① 立刻给反馈：先把"正在上传"写在按钮下面，并禁用按钮防重复点
+    if (files.length === 0) { setStatus('statusText', '先在上面选择一份 PDF。', 'err'); return; }
     setBusy(true);
-    setStatus('statusText', '⏳ 正在上传文件（' + files.length + ' 个）…', 'warn');
-    $('statusText').scrollIntoView({ block: 'nearest' });
+    setStatus('statusText', '⏳ 正在上传（' + files.length + ' 个文件）…', 'warn');
     $('artifactList').innerHTML = '';
-    var jobs = files.map(function (f) { return readBase64(f).then(function (b64) { return { name: f.name, contentBase64: b64 }; }); });
-    Promise.all(jobs).then(function (payload) {
+    Promise.all(files.map(function (f) {
+      return readBase64(f).then(function (b64) { return { name: f.name, contentBase64: b64 }; });
+    })).then(function (payload) {
       return api('/api/task', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instruction: instruction, files: payload }) });
     }).then(function (r) {
       if (r.status !== 202) {
@@ -317,205 +391,77 @@ window.onerror = function (message, source, line, column) {
         return;
       }
       currentTask = r.body.taskId;
-      try { localStorage.setItem('pdf-helper-task', currentTask); } catch (e) {}
-      setStatus('statusText', '✅ 已提交：' + instruction + '\n任务号 ' + currentTask + '\n正在处理，通常 1~3 分钟；这一步不用管它，我每 2 秒自动刷新。', 'warn');
+      try { localStorage.setItem(taskKey, currentTask); } catch (e) {}
+      setStatus('statusText', '✅ 已提交：' + String(instruction).split('\n')[0] + '\n任务号 ' + currentTask + '\n正在处理，通常 1~3 分钟，我每 2 秒自动刷新。', 'warn');
       startPolling();
     }).catch(function (e) { setBusy(false); setStatus('statusText', '提交出错：' + e, 'err'); });
   }
 
-  // 轮询：**用 setTimeout 自排程**而不是 setInterval —— 手机切到别的 App 时定时器会被系统掐断，
-  // 所以还要在页面重新可见/获得焦点时立刻补一次（实测"不刷新就永远停在排队中"就是这个 ✗）。
-  var pollTimer = null;
-  function schedulePoll(ms) {
-    if (pollTimer) { clearTimeout(pollTimer); }
-    pollTimer = setTimeout(poll, ms);
-  }
-  function startPolling() { schedulePoll(300); }
-
+  function schedulePoll(ms) { if (pollTimer) { clearTimeout(pollTimer); } pollTimer = setTimeout(poll, ms); }
+  function startPolling() { schedulePoll(400); }
   function poll() {
     if (!currentTask) { return; }
-    var started = Date.now();
+    var startedAt = Date.now();
     api('/api/task/' + encodeURIComponent(currentTask)).then(function (r) {
       if (r.status !== 200) { schedulePoll(3000); return; }
       var s = r.body.status;
-      var label = { queued: '⏳ 排队中（前面还有任务）', ok: '✅ 处理完成', timeout: '⏱️ 超时了', error: '❌ 处理失败', running: '⚙️ 处理中' }[s] || s;
+      var label = { queued: '⏳ 排队中', ok: '✅ 处理完成', timeout: '⏱️ 超时', error: '❌ 处理失败', running: '⚙️ 处理中' }[s] || s;
       var stamp = new Date().toLocaleTimeString();
-      setStatus('statusText', label + '\n任务号 ' + currentTask + (s === 'ok' ? '' : '\n（' + stamp + ' 更新，通常 1~3 分钟）'), s === 'ok' ? 'ok' : (s === 'error' || s === 'timeout' ? 'err' : 'warn'));
+      setStatus('statusText', label + '\n任务号 ' + currentTask + (s === 'ok' ? '' : '\n（' + stamp + ' 更新，通常 1~3 分钟）'),
+        s === 'ok' ? 'ok' : ((s === 'error' || s === 'timeout') ? 'err' : 'warn'));
       if (s === 'ok' || s === 'error' || s === 'timeout') {
         if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
         setBusy(false);
-        try { localStorage.removeItem('pdf-helper-task'); } catch (e) {}
-        var list = toArray(r.body.artifacts || []);
-        var box = $('artifactList'); box.innerHTML = '';
-        if (list.length === 0) {
-          box.innerHTML = '<p class="hint">这次没有可下载的产物。</p>';
-        } else {
-          var head = document.createElement('p');
-          head.className = 'hint';
-          head.textContent = '产物 ' + list.length + ' 个（点一下下载，然后就能在微信里转发）：';
-          box.appendChild(head);
-          list.forEach(function (path, index) {
-            var a = document.createElement('a');
-            a.className = 'dl';
-            a.href = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask) + '&index=' + index + '&name=' + encodeURIComponent(path.split('/').pop());
-            a.textContent = '⬇︎ ' + path.split('/').pop();
-            box.appendChild(a);
-          });
-          box.insertAdjacentHTML('beforeend', '<p class="hint">飞书群里也会收到同样一份（不想要可以忽略）。</p>');
-        }
+        try { localStorage.removeItem(taskKey); } catch (e) {}
+        renderArtifacts(toArray(r.body.artifacts || []));
       } else {
-        // 前 30 秒 2 秒一查（快反馈），之后放慢到 5 秒（省电）
-        schedulePoll(Date.now() - started > 30000 ? 5000 : 2000);
+        schedulePoll(Date.now() - startedAt > 30000 ? 5000 : 2000);
       }
     }).catch(function () { schedulePoll(5000); });
   }
-
+  function renderArtifacts(list) {
+    var box = $('artifactList');
+    box.innerHTML = '';
+    if (list.length === 0) { box.innerHTML = '<p class="hint">这次没有可下载的产物（详情见飞书回执）。</p>'; return; }
+    var head = document.createElement('p');
+    head.className = 'hint';
+    head.textContent = '产物 ' + list.length + ' 个 —— 点一下下载，然后就能在微信里转发：';
+    box.appendChild(head);
+    list.forEach(function (path, index) {
+      var a = document.createElement('a');
+      a.className = 'dl';
+      a.href = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask)
+        + '&index=' + index + '&name=' + encodeURIComponent(String(path).split('/').pop());
+      a.textContent = String(path).split('/').pop();
+      box.appendChild(a);
+    });
+    box.insertAdjacentHTML('beforeend', '<p class="hint">飞书群里也会收到同样一份。</p>');
+  }
   $('refreshStatus').onclick = function () { poll(); };
   $('newTask').onclick = function () {
-    currentTask = ''; files = []; addFiles([]);
+    currentTask = ''; files = []; renderFiles();
     setStatus('statusText', ''); $('artifactList').innerHTML = '';
     $('customText').value = '';
-    try { localStorage.removeItem('pdf-helper-task'); } catch (e) {}
+    try { localStorage.removeItem(taskKey); } catch (e) {}
   };
-  // 切回页面 / 重新获得焦点时立刻补一次（手机后台定时器不可靠）
   document.addEventListener('visibilitychange', function () { if (!document.hidden && currentTask) { poll(); } });
   window.addEventListener('focus', function () { if (currentTask) { poll(); } });
 
-  // 已经存过口令就直接进主界面
+  $('sendCustom').onclick = function () {
+    var text = $('customText').value.trim();
+    if (!text) { setStatus('statusText', '先写一句要求，或者直接点上面的按钮。', 'err'); return; }
+    openConfirm(text);
+  };
+
+  dbg('页面 ' + VERSION + ' 已加载 ' + new Date().toLocaleTimeString());
+  dbg('可用预设：' + toArray(PRESETS).join(' / '));
   try {
     var saved = localStorage.getItem(tokenKey);
     if (saved && saved.length >= 16) { token = saved; $('tokenInput').value = saved; connect(); }
-    // 刷新/切回后还能接着看上一个任务（不再"必须刷新才知道完成了"）
-    var lastTask = localStorage.getItem('pdf-helper-task');
+    var lastTask = localStorage.getItem(taskKey);
     if (lastTask) { currentTask = lastTask; setBusy(true); setStatus('statusText', '正在查询上一个任务 ' + lastTask + ' …', 'warn'); startPolling(); }
   } catch (e) {}
-
-  // ── 确认弹窗（防误触）+ 产物名称输入框 ──────────────────────────────
-  // 做法：**包装** submit，而不是改各个按钮的 onclick——按钮/自定义入口都走 submit，
-  // 这样只有一处需要维护，也不会因为页面结构变动而漏改（我在这上面踩过锚点失效的坑 ✗）。
-  var presetFields = {};
-  var __origSubmit = submit;
-
-  function fileNameBase() {
-    if (files.length === 0) { return '产物'; }
-    var name = String(files[0].name).replace(/\.[^.]+$/, '');
-    var cleaned = name.replace(/[（(]答案[)）]\s*$/u, '').replace(/\+?\s*答案\s*$/u, '').trim();
-    return cleaned !== '' ? cleaned : name;
-  }
-
-  function openConfirmFor(instruction) {
-    var isPreset = Object.prototype.hasOwnProperty.call(presetFields, instruction);
-    var fields = isPreset ? toArray(presetFields[instruction]) : [];
-    try {
-      $('modalTitle').textContent = isPreset ? ('确认：' + instruction) : '确认提交';
-      $('modalDesc').textContent = isPreset
-        ? '名称可以改；留空就按默认命名。确认后立刻开始处理。'
-        : '确认后立刻开始处理。';
-      var box = $('modalFields');
-      box.innerHTML = '';
-      if (fields.length === 0) {
-        var p1 = document.createElement('p');
-        p1.className = 'hint';
-        p1.textContent = String(instruction).slice(0, 160);
-        box.appendChild(p1);
-      }
-      fields.forEach(function (f) {
-        var label = document.createElement('label');
-        label.className = 'hint';
-        label.textContent = f.label;
-        var input = document.createElement('input');
-        input.type = 'text';
-        input.id = 'field_' + f.key;
-        input.value = fileNameBase() + (f.suffix || '');
-        box.appendChild(label);
-        box.appendChild(input);
-      });
-      $('modalOk').onclick = function () {
-        var text = instruction;
-        if (isPreset && fields.length > 0) {
-          var lines = [];
-          fields.forEach(function (f) {
-            var el = $('field_' + f.key);
-            var value = el ? String(el.value).trim() : '';
-            if (value !== '') { lines.push(f.label + '：' + value); }
-          });
-          text = instruction;
-          if (lines.length > 0) { text += '\n\n【本次命名要求（以此为准）】\n' + lines.join('\n'); }
-        }
-        show($('modal'), false);
-        __origSubmit(text);
-      };
-      $('modalCancel').onclick = function () { show($('modal'), false); };
-      show($('modal'), true);
-      dbg('弹窗已打开：' + (isPreset ? instruction : '自定义') + '（输入框 ' + fields.length + ' 个）');
-    } catch (e) {
-      dbg('❌ 弹窗失败，直接提交：' + e);   // 兜底：弹窗出错也不能挡住用户
-      __origSubmit(instruction);
-    }
-  }
-
-  // 拦截：任何提交都先过确认弹窗；预设名去拿字段定义（拿不到就问服务器要）
-  submit = function (instruction) {
-    var needFields = Object.keys(presetFields).length === 0;
-    if (!needFields) { openConfirmFor(instruction); return; }
-    api('/api/health').then(function (r) {
-      presetFields = (r.body && r.body.presetFields) || presetFields;
-      openConfirmFor(instruction);
-    }).catch(function () { openConfirmFor(instruction); });
-  };
-
-  // ── 诊断条：默认隐藏，点右下角「🐞 诊断」才展开 ──────────────────────
-  // 日志照旧在后台累积（dbg 一直在写），所以展开时能看到之前的历史；
-  // 平时不占地方，也不用担心用户被日志吓到 ✓
-  (function initDebugToggle() {
-    try {
-      var panel = $('debug');
-      if (!panel) { return; }
-      panel.style.display = 'none';            // 行内样式：任何情况下都收得起来
-      var button = $('debugToggle');
-      if (!button) {                            // 兜底：HTML 里没有就现造一个
-        button = document.createElement('button');
-        button.id = 'debugToggle';
-        button.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:101;padding:10px 14px;font-size:13px;border-radius:22px;background:#fff';
-        if (document.body && document.body.appendChild) { document.body.appendChild(button); }
-      }
-      button.textContent = '🐞 诊断';
-      var setVisible = function (on) {
-        panel.style.display = on ? 'block' : 'none';
-        if (on) { panel.className = panel.className.replace(/ ?hidden/, ''); } else if (!/ hidden/.test(panel.className)) { panel.className += ' hidden'; }
-        button.textContent = on ? '🐞 收起' : '🐞 诊断';
-        if (on) { try { panel.scrollTop = panel.scrollHeight; } catch (e) {} }
-      };
-      button.onclick = function () { setVisible(panel.style.display === 'none'); };
-      var closeInner = document.createElement('button');
-      closeInner.type = 'button';
-      closeInner.textContent = '收起 ✕';
-      closeInner.style.cssText = 'float:right;padding:2px 10px;font-size:12px;margin-left:8px;font-weight:600';
-      closeInner.onclick = function () { setVisible(false); };
-      panel.appendChild(closeInner);
-      var clear = document.createElement('button');
-      clear.type = 'button';
-      clear.textContent = '清空';
-      clear.style.cssText = 'float:right;padding:2px 8px;font-size:12px;margin-left:8px';
-      clear.onclick = function () { panel.textContent = ''; panel.appendChild(closeInner); panel.appendChild(clear); };
-      panel.appendChild(clear);
-      dbg('诊断条已就绪（默认隐藏；点右下角「🐞 诊断」展开）');
-    } catch (e) { /* 诊断功能绝不能影响主流程 */ }
-  })();
 })();
 </script>
-<div id="modal" class="hidden" style="position:fixed;inset:0;background:rgba(17,24,39,.55);z-index:100;display:flex;align-items:flex-end">
-  <div style="background:#fff;width:100%;max-width:640px;margin:0 auto;border-radius:14px 14px 0 0;padding:16px;max-height:88vh;overflow:auto">
-    <h2 id="modalTitle" style="margin:0 0 4px;font-size:16px"></h2>
-    <p class="hint" id="modalDesc"></p>
-    <div id="modalFields"></div>
-    <div class="row" style="margin-top:14px">
-      <button id="modalCancel" style="flex:1">取消</button>
-      <button id="modalOk" class="primary" style="flex:2">确认提交</button>
-    </div>
-  </div>
-</div>
-<button id="debugToggle" type="button" onclick="var d=document.getElementById('debug');var b=document.getElementById('debugToggle');var on=!d.style.display||d.style.display==='none';d.style.display=on?'block':'none';b.textContent=on?'\ud83d\udc1e 收起':'\ud83d\udc1e 诊断';if(on&&window.__pbErrors&&window.__pbErrors.length){d.textContent='\u26a0\ufe0f 页面出错：\n'+window.__pbErrors.join('\n');}" style="position:fixed;right:10px;bottom:10px;z-index:101;padding:10px 14px;font-size:13px;border-radius:22px;background:#fff;opacity:.9">🐞 诊断</button>
-<div id="debug" style="display:none;bottom:60px;position:fixed;left:0;right:0;background:#111827;color:#f9fafb;font:12px/1.45 ui-monospace,Menlo,monospace;padding:8px 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;z-index:99"><div id="debugBar" style="float:right;display:flex;gap:6px;margin-left:8px"><button type="button" id="copyAllBtn" style="padding:2px 10px;font-size:12px;font-weight:600" onclick="var d=document.getElementById('debug');if(window.__pbCopy){window.__pbCopy(d.innerText||d.textContent,this)}">复制全部</button><button type="button" id="closeDbgBtn" style="padding:2px 10px;font-size:12px;font-weight:600" onclick="var d=document.getElementById('debug');var b=document.getElementById('debugToggle');d.style.display='none';if(b){b.textContent='\ud83d\udc1e 诊断'}">收起 ✕</button></div></div>
 </body>
 </html>
