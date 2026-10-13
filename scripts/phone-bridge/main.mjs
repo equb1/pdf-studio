@@ -315,6 +315,7 @@ export async function runTask(config, instruction, deps) {
     maxFilesPerTask: config.maxFilesPerTask,
   })
   logger(`任务 ${taskId} 结束：status=${status} 用时=${(elapsedMs / 1000).toFixed(1)}s 产物=${files.length} 个`)
+  deps.recordArtifacts?.(instruction.messageId, files)
 
   // 配置了「手机直下」（插件侧 token 端点）时，回执里附上可点的下载链接
   const downloadBase = typeof config.downloadBaseUrl === 'string' ? config.downloadBaseUrl : ''
@@ -367,6 +368,14 @@ export function createBridge(config, deps = {}) {
   const now = deps.now ?? (() => Date.now())
   const pending = deps.pending ?? new PendingInputs()
   const persist = deps.persist ?? (() => {
+    // 产物清单一起存（重启后网页仍能查到"这次交付了什么"）
+    try {
+      writeFileSync(config.statePath, JSON.stringify({
+        ledger: ledger.toJSON(),
+        pending: pending.toJSON(),
+        artifacts: Object.fromEntries(artifactsByMessage),
+      }))
+    } catch { /* 写状态失败不影响任务本身 */ }
     try {
       writeFileSync(config.statePath, JSON.stringify({ ledger: ledger.toJSON(), pending: pending.toJSON() }, null, 2))
     } catch (error) {
@@ -374,8 +383,19 @@ export function createBridge(config, deps = {}) {
     }
   })
   const inFlightDirs = new Set()
+  /** messageId → 实际交付的产物（持久化；状态查询的权威来源）。 */
+  const artifactsByMessage = new Map()
+  const recordArtifacts = (messageId, files) => {
+    artifactsByMessage.set(String(messageId), (files ?? []).map(entry => (typeof entry === 'string' ? entry : entry.path)))
+    persist()
+  }
+
   const queue = new TaskQueue(job => runTask(config, job.instruction, {
     inputs: job.inputs,
+    // **必须转发 taskId**：网页入口自己生成了 taskId 并按它查产物目录，
+    // 不转发的话任务会跑在自动生成的名字下，网页永远查不到产物（飞书却收到了）✗
+    ...(job.taskId === undefined ? {} : { taskId: job.taskId }),
+    recordArtifacts,
     logger,
     lark,
     ledger,
@@ -581,12 +601,20 @@ export function createBridge(config, deps = {}) {
 
   /** 网页轮询状态：账本 + outbox/<taskId> 里的产物清单。 */
   const taskStatus = taskId => {
-    const status = ledger.statusOf(`web:${taskId}`)
+    const id = `web:${taskId}`
+    const status = ledger.statusOf(id)
     if (status === undefined) return undefined
-    return { status, artifacts: listArtifacts(config.outboxDir, taskId, config.allowedExtensions) }
+    const recorded = artifactsByMessage.get(id)
+    return {
+      status,
+      // 记录优先（权威）；没有记录的老任务才扫目录兜底
+      artifacts: recorded !== undefined && recorded.length > 0
+        ? recorded
+        : listArtifacts(config.outboxDir, taskId, config.allowedExtensions),
+    }
   }
 
-  return { pollOnce, handleMessage, handleAttachment, submitTask, taskStatus, queue, ledger, pending, persist, lark, collectOutbox }
+  return { pollOnce, handleMessage, handleAttachment, submitTask, taskStatus, recordArtifacts, queue, ledger, pending, persist, lark, collectOutbox }
 }
 
 /**
@@ -750,6 +778,7 @@ export async function main(argv = process.argv.slice(2)) {
         inboxDir: config.inboxDir,
         maxBodyBytes: config.maxBodyBytes,
         presets: config.presets,
+        presetFields: config.presetFields,
         page,
         pagePath: join(HERE, 'web', 'index.html'),
         logger,

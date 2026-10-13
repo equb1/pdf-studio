@@ -63,6 +63,8 @@ export interface HttpBridgeOptions {
   maxBodyBytes: number
   /** 页面上显示的预设按钮（名字 → 指令）。 */
   presets: Record<string, string>
+  /** 预设 → 名称输入框（页面据此弹窗）。 */
+  presetFields?: Record<string, Array<{ key: string; label: string; suffix?: string }>>
   /** 预设按钮"名字"，页面只显示名字。 */
   page: string
   /** 页面文件路径：给了就**每次请求都读**（改完页面刷新即生效，不用重启服务）。 */
@@ -154,7 +156,7 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
     }
 
     if (req.method === 'GET' && path === '/api/health') {
-      json(res, 200, { ok: true, presets: Object.keys(options.presets), outbox: options.outboxDir })
+      json(res, 200, { ok: true, presets: Object.keys(options.presets), presetFields: options.presetFields ?? {}, outbox: options.outboxDir })
       return
     }
 

@@ -319,8 +319,93 @@
     var lastTask = localStorage.getItem('pdf-helper-task');
     if (lastTask) { currentTask = lastTask; setBusy(true); setStatus('statusText', '正在查询上一个任务 ' + lastTask + ' …', 'warn'); startPolling(); }
   } catch (e) {}
+
+  // ── 确认弹窗（防误触）+ 产物名称输入框 ──────────────────────────────
+  // 做法：**包装** submit，而不是改各个按钮的 onclick——按钮/自定义入口都走 submit，
+  // 这样只有一处需要维护，也不会因为页面结构变动而漏改（我在这上面踩过锚点失效的坑 ✗）。
+  var presetFields = {};
+  var __origSubmit = submit;
+
+  function fileNameBase() {
+    if (files.length === 0) { return '产物'; }
+    var name = String(files[0].name).replace(/\.[^.]+$/, '');
+    var cleaned = name.replace(/[（(]答案[)）]\s*$/u, '').replace(/\+?\s*答案\s*$/u, '').trim();
+    return cleaned !== '' ? cleaned : name;
+  }
+
+  function openConfirmFor(instruction) {
+    var isPreset = Object.prototype.hasOwnProperty.call(presetFields, instruction);
+    var fields = isPreset ? toArray(presetFields[instruction]) : [];
+    try {
+      $('modalTitle').textContent = isPreset ? ('确认：' + instruction) : '确认提交';
+      $('modalDesc').textContent = isPreset
+        ? '名称可以改；留空就按默认命名。确认后立刻开始处理。'
+        : '确认后立刻开始处理。';
+      var box = $('modalFields');
+      box.innerHTML = '';
+      if (fields.length === 0) {
+        var p1 = document.createElement('p');
+        p1.className = 'hint';
+        p1.textContent = String(instruction).slice(0, 160);
+        box.appendChild(p1);
+      }
+      fields.forEach(function (f) {
+        var label = document.createElement('label');
+        label.className = 'hint';
+        label.textContent = f.label;
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.id = 'field_' + f.key;
+        input.value = fileNameBase() + (f.suffix || '');
+        box.appendChild(label);
+        box.appendChild(input);
+      });
+      $('modalOk').onclick = function () {
+        var text = instruction;
+        if (isPreset && fields.length > 0) {
+          var lines = [];
+          fields.forEach(function (f) {
+            var el = $('field_' + f.key);
+            var value = el ? String(el.value).trim() : '';
+            if (value !== '') { lines.push(f.label + '：' + value); }
+          });
+          text = instruction;
+          if (lines.length > 0) { text += '\n\n【本次命名要求（以此为准）】\n' + lines.join('\n'); }
+        }
+        show($('modal'), false);
+        __origSubmit(text);
+      };
+      $('modalCancel').onclick = function () { show($('modal'), false); };
+      show($('modal'), true);
+      dbg('弹窗已打开：' + (isPreset ? instruction : '自定义') + '（输入框 ' + fields.length + ' 个）');
+    } catch (e) {
+      dbg('❌ 弹窗失败，直接提交：' + e);   // 兜底：弹窗出错也不能挡住用户
+      __origSubmit(instruction);
+    }
+  }
+
+  // 拦截：任何提交都先过确认弹窗；预设名去拿字段定义（拿不到就问服务器要）
+  submit = function (instruction) {
+    var needFields = Object.keys(presetFields).length === 0;
+    if (!needFields) { openConfirmFor(instruction); return; }
+    api('/api/health').then(function (r) {
+      presetFields = (r.body && r.body.presetFields) || presetFields;
+      openConfirmFor(instruction);
+    }).catch(function () { openConfirmFor(instruction); });
+  };
 })();
 </script>
+<div id="modal" class="hidden" style="position:fixed;inset:0;background:rgba(17,24,39,.55);z-index:100;display:flex;align-items:flex-end">
+  <div style="background:#fff;width:100%;max-width:640px;margin:0 auto;border-radius:14px 14px 0 0;padding:16px;max-height:88vh;overflow:auto">
+    <h2 id="modalTitle" style="margin:0 0 4px;font-size:16px"></h2>
+    <p class="hint" id="modalDesc"></p>
+    <div id="modalFields"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="modalCancel" style="flex:1">取消</button>
+      <button id="modalOk" class="primary" style="flex:2">确认提交</button>
+    </div>
+  </div>
+</div>
 <div id="debug" style="position:fixed;left:0;right:0;bottom:0;background:#111827;color:#f9fafb;font:12px/1.45 ui-monospace,Menlo,monospace;padding:8px 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;z-index:99"></div>
 </body>
 </html>

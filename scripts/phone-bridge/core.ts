@@ -125,6 +125,8 @@ export interface BridgeConfig {
    * 于是"发文件 → 回一句短名字"就能干活，不用每次打一长串要求。
    */
   presets: Record<string, string>
+  /** 预设 → 点按钮后要用户填的名称输入框（拆分要填两个）。 */
+  presetFields: Record<string, Array<{ key: string; label: string; suffix?: string }>>
   /**
    * 收到文件后**自动**用哪个预设（默认空 = 不自动，仍等用户指令）。
    * 设成 `"全处理"` 之类即可把"发文件 → 下指令"两步压成一步。
@@ -247,6 +249,7 @@ export function normalizeConfig(raw: Record<string, unknown>, overrides: Partial
     httpToken: str('httpToken', '') as string,
     maxBodyBytes: num('maxBodyBytes', 8 * 1024 * 1024),
     presets: readPresets(raw.presets),
+    presetFields: readPresetFields(raw.presetFields),
     defaultPreset: str('defaultPreset', '') as string,
     autoPresetDelayMs: num('autoPresetDelayMs', 60_000),
     inboxDir: str('inboxDir', '') as string,
@@ -707,6 +710,26 @@ export function matchPreset(
     }
   }
   return undefined
+}
+
+/** 读"预设 → 名称输入框"表；非法项直接丢（宁可少一个输入框，也不要崩）。 */
+function readPresetFields(raw: unknown): Record<string, Array<{ key: string; label: string; suffix?: string }>> {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Record<string, Array<{ key: string; label: string; suffix?: string }>> = {}
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(value)) continue
+    const fields: Array<{ key: string; label: string; suffix?: string }> = []
+    for (const entry of value) {
+      if (entry === null || typeof entry !== 'object') continue
+      const key = (entry as { key?: unknown }).key
+      const label = (entry as { label?: unknown }).label
+      if (typeof key !== 'string' || typeof label !== 'string') continue
+      const suffix = (entry as { suffix?: unknown }).suffix
+      fields.push({ key, label, ...(typeof suffix === 'string' ? { suffix } : {}) })
+    }
+    if (fields.length > 0) out[name.trim()] = fields
+  }
+  return out
 }
 
 /** 读预设表：只接受"名字 → 非空字符串"。 */
