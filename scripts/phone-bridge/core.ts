@@ -112,6 +112,14 @@ export interface BridgeConfig {
   inputTtlMs: number
   /** 单个附件大小上限（字节），默认 30MB：超了拒绝并回执。 */
   maxInputBytes: number
+  /** 手机网页监听地址，默认 `127.0.0.1`（给手机用就填 Tailscale 地址；**不要暴露公网**）。 */
+  httpHost: string
+  /** 手机网页端口，默认 8791。 */
+  httpPort: number
+  /** 手机网页访问口令；**为空则不启动网页服务**（长度不足 16 会拒绝启动）。 */
+  httpToken: string
+  /** 请求体上限（字节），默认 1MB（含 base64 文件时会大一些，按需调）。 */
+  maxBodyBytes: number
   /**
    * **预设任务**：名字 → 完整指令。用户发 `/<名字>`（或 `/pdf <名字>`）即可展开成整条指令，
    * 于是"发文件 → 回一句短名字"就能干活，不用每次打一长串要求。
@@ -234,6 +242,10 @@ export function normalizeConfig(raw: Record<string, unknown>, overrides: Partial
     maxQueueLength: num('maxQueueLength', DEFAULTS.maxQueueLength),
     outboxRetentionDays: num('outboxRetentionDays', DEFAULTS.outboxRetentionDays),
     autoConfirm: raw.autoConfirm !== false,
+    httpHost: str('httpHost', '127.0.0.1') as string,
+    httpPort: num('httpPort', 8791),
+    httpToken: str('httpToken', '') as string,
+    maxBodyBytes: num('maxBodyBytes', 8 * 1024 * 1024),
     presets: readPresets(raw.presets),
     defaultPreset: str('defaultPreset', '') as string,
     autoPresetDelayMs: num('autoPresetDelayMs', 60_000),

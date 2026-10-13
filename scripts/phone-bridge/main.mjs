@@ -31,6 +31,7 @@ import { spawn } from 'node:child_process'
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { listArtifacts, startHttpBridge } from './http.ts'
 import {
   Ledger,
   PendingInputs,
@@ -273,7 +274,7 @@ export function makeLarkAdapter(config, logger, runner = runCommand) {
  */
 export async function runTask(config, instruction, deps) {
   const { logger, lark, ledger, runner = runCommand, now = () => Date.now(), inputs = [] } = deps
-  const taskId = `t-${now()}-${instruction.messageId.slice(-6)}`
+  const taskId = deps.taskId ?? `t-${now()}-${instruction.messageId.slice(-6)}`
   const outboxTaskDir = join(config.outboxDir, taskId)
   mkdirSync(outboxTaskDir, { recursive: true })
   deps.registerTaskDir?.(outboxTaskDir)   // 告诉 GC：这个目录正在用
@@ -559,7 +560,33 @@ export function createBridge(config, deps = {}) {
     return accepted
   }
 
-  return { pollOnce, handleMessage, handleAttachment, queue, ledger, pending, persist, lark, collectOutbox }
+  /**
+   * 网页入口提交任务：预设名先用同一套 `expandPreset` 展开，再走同一条单飞队列。
+   * 队列满时**抛错**（由 HTTP 层回 429），不静默丢。
+   */
+  const submitTask = ({ text, inputs: inputPaths, taskId }) => {
+    if (config.maxQueueLength > 0 && queue.size >= config.maxQueueLength) throw new Error('queue-full')
+    const expanded = expandPreset(text, config.presets, { prefix: config.prefix })
+    if (expanded.preset !== undefined) logger(`网页任务命中预设「${expanded.preset}」`)
+    const id = `web:${taskId}`
+    ledger.mark(id, 'queued', now())
+    persist()
+    void queue.enqueue({
+      instruction: { messageId: id, chatId: config.chatId, text: expanded.text },
+      inputs: inputPaths ?? [],
+      taskId,
+    }).then(persist, error => logger(`网页任务异常：${String(error)}`))
+    return taskId
+  }
+
+  /** 网页轮询状态：账本 + outbox/<taskId> 里的产物清单。 */
+  const taskStatus = taskId => {
+    const status = ledger.statusOf(`web:${taskId}`)
+    if (status === undefined) return undefined
+    return { status, artifacts: listArtifacts(config.outboxDir, taskId, config.allowedExtensions) }
+  }
+
+  return { pollOnce, handleMessage, handleAttachment, submitTask, taskStatus, queue, ledger, pending, persist, lark, collectOutbox }
 }
 
 /**
@@ -708,7 +735,31 @@ export async function main(argv = process.argv.slice(2)) {
   logger(`桥接器启动：chat=${config.chatId} 轮询=${config.pollMs}ms 超时=${config.timeoutMs}ms outbox=${config.outboxDir}`)
 
   const bridge = createBridge({ ...config, dryRun: args.dryRun }, { logger, ledger, pending })
-  const { queue, persist, pollOnce, handleMessage, handleAttachment } = bridge
+  const { queue, persist, pollOnce, handleMessage, handleAttachment, submitTask, taskStatus } = bridge
+
+  // 手机网页（可选）：配了 httpToken 才启动；没配就完全不开端口（fail-closed）
+  let web = null
+  if (typeof config.httpToken === 'string' && config.httpToken.trim() !== '') {
+    try {
+      const page = readFileSync(join(HERE, 'web', 'index.html'), 'utf8')
+      web = await startHttpBridge({
+        host: config.httpHost,
+        port: config.httpPort,
+        token: config.httpToken,
+        outboxDir: config.outboxDir,
+        inboxDir: config.inboxDir,
+        maxBodyBytes: config.maxBodyBytes,
+        presets: config.presets,
+        page,
+        logger,
+        submit: task => { submitTask(task) },
+        status: taskId => taskStatus(taskId),
+      })
+      logger(`手机网页地址：${web.url}`)
+    } catch (error) {
+      logger(`手机网页启动失败：${String(error)}`)
+    }
+  }
 
   // 停止信号：只置标志位让主循环自然收尾（不硬杀正在跑的任务）
   let stopping = false
@@ -804,6 +855,7 @@ export async function main(argv = process.argv.slice(2)) {
     await pollOnce()
     await drain()
     persist()
+    if (web !== null) await web.close().catch(() => {})
     logger('--once：一轮结束，退出')
     return 0
   }
@@ -815,6 +867,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   await drain()
   persist()
+  if (web !== null) await web.close().catch(() => {})
   logger('已退出')
   return 0
 }
