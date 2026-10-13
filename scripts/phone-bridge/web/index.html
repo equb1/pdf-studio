@@ -529,79 +529,21 @@
     color: var(--label-tertiary);
     margin-top: 2px;
   }
-  .artifact-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-  .share-button, .wx-button {
-    font-size: 13px;
-    font-weight: 600;
-    padding: 7px 13px;
-    border-radius: var(--radius-pill);
-    background: #07c160;
-    color: #ffffff;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    border: none;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: background 0.15s ease, opacity 0.15s ease;
-  }
-  .wx-button:hover, .share-button:hover { background: #06ad56; }
-  .wx-button:active, .share-button:active { opacity: 0.82; }
-  .wx-button svg, .share-button svg { width: 15px; height: 15px; }
   .dl-button {
     text-decoration: none;
     font-size: 13px;
-    font-weight: 500;
-    padding: 7px 12px;
+    font-weight: 600;
+    padding: 7px 14px;
     border-radius: var(--radius-pill);
-    background: var(--bg-card);
-    border: 1px solid var(--separator);
-    color: var(--label-primary);
+    background: var(--accent);
+    color: #ffffff;
     display: inline-flex;
     align-items: center;
     gap: 4px;
     flex-shrink: 0;
-    transition: background 0.15s ease;
   }
-  .dl-button:active { background: var(--fill-quaternary); }
-  .dl-button svg { width: 14px; height: 14px; color: var(--label-secondary); }
-
-  /* 顶部轻量浮动 Toast */
-  #toast {
-    position: fixed;
-    top: calc(18px + env(safe-area-inset-top, 0px));
-    left: 50%;
-    transform: translateX(-50%) translateY(-70px);
-    background: rgba(30, 30, 32, 0.92);
-    color: #ffffff;
-    padding: 10px 18px;
-    border-radius: var(--radius-pill);
-    font-size: 13px;
-    font-weight: 500;
-    z-index: 10000;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
-    pointer-events: none;
-    opacity: 0;
-    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.28s ease;
-    max-width: 90vw;
-    text-align: center;
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-  }
-  #toast.show {
-    transform: translateX(-50%) translateY(0);
-    opacity: 1;
-  }
-
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
+  .dl-button:active { opacity: 0.8; }
+  .dl-button svg { width: 14px; height: 14px; }
 
   /* Modal Sheet */
   #modal {
@@ -1044,9 +986,6 @@ window.onerror = function (message, source, line, column) {
   局域网点对点通信 · 不经过外部第三方云服务
 </footer>
 
-<!-- 轻量 Toast 提示 -->
-<div id="toast"></div>
-
 <!-- 确认弹窗 -->
 <div id="modal" class="hidden">
   <div class="sheet">
@@ -1056,44 +995,6 @@ window.onerror = function (message, source, line, column) {
     <div class="modal-actions">
       <button id="modalCancel">取消</button>
       <button id="modalOk" class="primary">确认提交</button>
-    </div>
-  </div>
-</div>
-
-<!-- 微信转发助手弹窗 -->
-<div id="wxModal" class="hidden">
-  <div class="sheet">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-      <div style="width:40px;height:40px;border-radius:12px;background:#07c160;display:flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M9.5 4C5.36 4 2 6.91 2 10.5c0 2 1.05 3.8 2.72 5.03l-.68 2.06a.5.5 0 0 0 .62.63l2.45-.75c.74.22 1.54.34 2.39.34.2 0 .4-.01.6-.02A6.47 6.47 0 0 1 10 16c0-3.87 3.58-7 8-7 .4 0 .8.03 1.18.08C18.17 6.06 14.2 4 9.5 4zm8.5 7c-3.59 0-6.5 2.46-6.5 5.5 0 1.63.85 3.1 2.2 4.1l-.54 1.65a.4.4 0 0 0 .5.5l1.96-.6c.59.18 1.23.27 1.88.27 3.59 0 6.5-2.46 6.5-5.5S21.59 11 18 11z"/></svg>
-      </div>
-      <div>
-        <h2 style="margin:0;font-size:16px;font-weight:600">转发至微信</h2>
-        <p style="margin:3px 0 0;font-size:12px;color:var(--label-secondary)" id="wxFileName">准备就绪</p>
-      </div>
-    </div>
-
-    <div style="background:var(--bg-subtle);border:1px solid var(--separator);border-radius:var(--radius-md);padding:14px;margin:12px 0;font-size:12.5px;line-height:1.6;color:var(--label-primary)">
-      <div style="font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px;color:var(--success)">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
-        <span>已自动下载保存到手机</span>
-      </div>
-      <p style="margin:0 0 8px;color:var(--label-secondary)">
-        ① 点击下方绿色按钮，可直接呼起微信 App；<br>
-        ② 在微信打开任意好友聊天，点击右下角 <b>「+」➜「文件」</b>（在“最近文件”或“下载”中），首个文件即是本次生成的 PDF，即可直接发送实体文件给好友！
-      </p>
-      <div style="font-size:11.5px;color:var(--label-tertiary);border-top:1px dashed var(--separator);padding-top:8px;margin-top:8px">
-        💡 备用方式：文件直链已同步复制到剪贴板，直接在微信对话框中长按「粘贴」发送亦可。
-      </div>
-    </div>
-
-    <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px">
-      <button type="button" id="wxLaunchBtn" class="primary" style="background:#07c160;border-color:#07c160;font-size:14px;font-weight:600;padding:12px">
-        立即打开微信
-      </button>
-      <button type="button" id="wxCloseBtn" style="font-size:13px;padding:10px">
-        完成 / 返回
-      </button>
     </div>
   </div>
 </div>
@@ -1579,52 +1480,6 @@ window.onerror = function (message, source, line, column) {
     startSubmit(text);
   }
 
-  var sessionKey = 'pdf-helper-session';
-  var draftKey = 'pdf-helper-draft';
-  var blobCache = {}; // 内存预热的 Blob 缓存，确保点击分享时能同步调用并保留用户手势
-
-  function showToast(msg, duration) {
-    try {
-      var t = $('toast');
-      if (!t) return;
-      t.textContent = msg;
-      t.classList.add('show');
-      clearTimeout(t._timer);
-      t._timer = setTimeout(function () {
-        t.classList.remove('show');
-      }, duration || 2500);
-    } catch (e) {}
-  }
-
-  function getSession() {
-    try {
-      var raw = localStorage.getItem(sessionKey);
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function saveSession(data) {
-    try {
-      var cur = getSession() || {};
-      for (var k in data) {
-        if (Object.prototype.hasOwnProperty.call(data, k)) {
-          cur[k] = data[k];
-        }
-      }
-      cur.updatedAt = Date.now();
-      localStorage.setItem(sessionKey, JSON.stringify(cur));
-    } catch (e) {}
-  }
-
-  function clearActiveSession() {
-    try {
-      localStorage.removeItem(sessionKey);
-      localStorage.removeItem(taskKey);
-    } catch (e) {}
-  }
-
   function readBase64(file) {
     return new Promise(function (resolve) {
       var reader = new FileReader();
@@ -1660,10 +1515,7 @@ window.onerror = function (message, source, line, column) {
     setBusy(true);
     setStatus('statusText', '正在上传文件（' + files.length + ' 份）至电脑端…', 'warn');
     $('artifactList').innerHTML = '';
-    blobCache = {}; // 重置缓存
     
-    var fileNames = files.map(function (f) { return f.name; });
-
     Promise.all(files.map(function (f) {
       return readBase64(f).then(function (b64) {
         return { name: f.name, contentBase64: b64 };
@@ -1682,17 +1534,7 @@ window.onerror = function (message, source, line, column) {
       }
       currentTask = r.body.taskId;
       try { localStorage.setItem(taskKey, currentTask); } catch (e) {}
-      var msg = '已进入处理队列：' + String(instruction).split('\n')[0] + '\n任务号：' + currentTask + '\n通常耗时 1~3 分钟，正在自动获取进度…';
-      setStatus('statusText', msg, 'warn');
-      saveSession({
-        taskId: currentTask,
-        instruction: instruction,
-        fileNames: fileNames,
-        status: 'queued',
-        statusText: msg,
-        statusCls: 'warn',
-        artifacts: []
-      });
+      setStatus('statusText', '已进入处理队列：' + String(instruction).split('\n')[0] + '\n任务号：' + currentTask + '\n通常耗时 1~3 分钟，正在自动获取进度…', 'warn');
       startPolling();
     }).catch(function (e) {
       setBusy(false);
@@ -1722,222 +1564,76 @@ window.onerror = function (message, source, line, column) {
       
       var stamp = new Date().toLocaleTimeString();
       var msg = label + '\n任务号：' + currentTask + (s === 'ok' ? '' : '\n（' + stamp + ' 状态更新）');
-      var cls = s === 'ok' ? 'ok' : ((s === 'error' || s === 'timeout') ? 'err' : 'warn');
       
-      setStatus('statusText', msg, cls);
+      setStatus('statusText', msg, s === 'ok' ? 'ok' : ((s === 'error' || s === 'timeout') ? 'err' : 'warn'));
       
-      var arts = toArray(r.body.artifacts || []);
-      // 每次状态更新都持久化到 localStorage，刷新页面绝不丢失！
-      saveSession({
-        taskId: currentTask,
-        status: s,
-        statusText: msg,
-        statusCls: cls,
-        artifacts: arts
-      });
-
       if (s === 'ok' || s === 'error' || s === 'timeout') {
         if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
         setBusy(false);
-        renderArtifacts(arts);
+        try { localStorage.removeItem(taskKey); } catch (e) {}
+        renderArtifacts(toArray(r.body.artifacts || []));
       } else {
         schedulePoll(Date.now() - startedAt > 30000 ? 5000 : 2000);
       }
     }).catch(function () { schedulePoll(5000); });
   }
 
-  // 静默预下载产物 Blob（用于支持文件实体分享的浏览器，实现点击时 0 延迟同步分享）
-  function prefetchArtifact(dlUrl) {
-    if (blobCache[dlUrl]) return;
-    fetch(dlUrl).then(function (res) {
-      if (!res.ok) return null;
-      return res.blob();
-    }).then(function (blob) {
-      if (blob) { blobCache[dlUrl] = blob; }
-    }).catch(function () {});
-  }
-
-  function triggerDownload(url, name) {
-    try {
-      var a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    } catch (e) {}
-  }
-
-  function forwardToWechat(dlUrl, fileName) {
-    var fullUrl = window.location.origin + dlUrl;
-    var isWeixin = /MicroMessenger/i.test(navigator.userAgent);
-
-    // 1. 若在微信内置浏览器中：直接通过新页面进行原生全屏渲染，右上角原生自带【发送给朋友】
-    if (isWeixin) {
-      window.location.href = dlUrl + '&inline=1';
-      showToast('已在微信中打开，点击右上角「…」选择【发送给朋友】即可！', 4000);
-      return;
-    }
-
-    // 2. 尝试系统原生分享（iOS Safari 或开启系统分享支持的设备）
-    var cachedBlob = blobCache[dlUrl];
-    if (cachedBlob && navigator.canShare) {
-      try {
-        var file = new File([cachedBlob], fileName, { type: 'application/pdf' });
-        if (navigator.canShare({ files: [file] })) {
-          navigator.share({
-            files: [file],
-            title: fileName
-          }).then(function () {
-            dbg('原生文件分享成功触发: ' + fileName);
-          }).catch(function (err) {
-            if (err && (err.name === 'AbortError' || String(err).indexOf('AbortError') !== -1)) return;
-            openWechatModal(dlUrl, fileName, fullUrl);
-          });
-          return;
-        }
-      } catch (e) {
-        dbg('尝试文件分享异常: ' + e);
-      }
-    }
-
-    if (navigator.share) {
-      navigator.share({
-        title: fileName,
-        text: 'PDF 助手生成：' + fileName,
-        url: fullUrl
-      }).then(function () {
-        dbg('原生分享面板已呼出');
-      }).catch(function (err) {
-        if (err && (err.name === 'AbortError' || String(err).indexOf('AbortError') !== -1)) return;
-        openWechatModal(dlUrl, fileName, fullUrl);
-      });
-      return;
-    }
-
-    // 3. 浏览器未开放系统分享（如 Android Chrome 在局域网 HTTP 下）：
-    //    自动帮助用户把 PDF 文件保存到手机，同时复制直链，并弹出直达微信助手，一键跳转微信 App！
-    openWechatModal(dlUrl, fileName, fullUrl);
-  }
-
-  function openWechatModal(dlUrl, fileName, fullUrl) {
-    // 自动触发文件下载，确保手机本地已有该 PDF 实体
-    triggerDownload(dlUrl, fileName);
-
-    // 自动将链接复制到剪贴板，提供双保险
-    if (window.__pbCopy) {
-      window.__pbCopy(fullUrl);
-    }
-
-    // 打开专属微信直达助手
-    var titleEl = $('wxFileName');
-    if (titleEl) { titleEl.textContent = fileName; }
-
-    var launchBtn = $('wxLaunchBtn');
-    if (launchBtn) {
-      launchBtn.onclick = function () {
-        // 瞬间呼起微信 App
-        window.location.href = 'weixin://';
-        setTimeout(function () {
-          show($('wxModal'), false);
-        }, 600);
-      };
-    }
-    var closeBtn = $('wxCloseBtn');
-    if (closeBtn) {
-      closeBtn.onclick = function () {
-        show($('wxModal'), false);
-      };
-    }
-    show($('wxModal'), true);
-  }
-
-  /**
-   * 转发到微信：用系统分享面板（Web Share API）。
-   *
-   * **关键前提**：带文件的分享只在**安全上下文（HTTPS）**下可用 ✗——
-   * 实测在 http 页面上 `navigator.canShare` 根本不存在，所以"打开微信"能行、"带文件分享"不行。
-   * 这里做能力检测：能用就走系统面板（微信会出现在里面 ✓）；不能用就如实提示，不假装成功。
-   */
-  function shareSupported() {
-    try { return !!(navigator.canShare && window.isSecureContext); } catch (e) { return false; }
-  }
-  function shareArtifact(url, filename) {
-    return fetch(url).then(function (res) { return res.blob(); }).then(function (blob) {
-      var file = new File([blob], filename, { type: blob.type || 'application/pdf' });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        return navigator.share({ files: [file], title: filename }).then(function () { return true; });
-      }
-      return false;
-    }).catch(function () { return false; });
-  }
-
   function renderArtifacts(list) {
     var box = $('artifactList');
     box.innerHTML = '';
-    if (list.length === 0) { box.innerHTML = '<p class="hint">这次没有可下载的产物（详情见飞书回执）。</p>'; return; }
-    var head = document.createElement('p');
-    head.className = 'hint';
-    head.textContent = '产物 ' + list.length + ' 个：';
+    if (list.length === 0) {
+      box.innerHTML = '<p class="hint">未生成文件输出（请查看飞书通知）。</p>';
+      return;
+    }
+    
+    var head = document.createElement('div');
+    head.style.cssText = 'font-size:13px;font-weight:600;color:var(--success);margin-bottom:6px;';
+    head.textContent = '处理完成，可下载文件（' + list.length + ' 份）：';
     box.appendChild(head);
-
-    var canShare = shareSupported();
+    
     list.forEach(function (path, index) {
-      var name = String(path).split('/').pop();
-      var url = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask)
-        + '&index=' + index + '&name=' + encodeURIComponent(name);
-
-      var wrap = document.createElement('div');
-      wrap.className = 'artifact';
-      var title = document.createElement('div');
-      title.className = 'artname';
-      title.textContent = name;
-      wrap.appendChild(title);
-
-      var row = document.createElement('div');
-      row.className = 'row';
+      var fileName = String(path).split('/').pop();
+      var item = document.createElement('div');
+      item.className = 'artifact-item';
+      
+      var left = document.createElement('div');
+      left.style.minWidth = '0';
+      var nameEl = document.createElement('div');
+      nameEl.className = 'artifact-title';
+      nameEl.textContent = fileName;
+      var subEl = document.createElement('div');
+      subEl.className = 'artifact-desc';
+      subEl.textContent = '下载后可直接在手机中转发';
+      left.appendChild(nameEl);
+      left.appendChild(subEl);
+      
       var dl = document.createElement('a');
-      dl.href = url;
-      dl.textContent = '下载';
-      row.appendChild(dl);
-
-      var share = document.createElement('button');
-      share.type = 'button';
-      share.className = 'share';
-      share.textContent = '转发到微信';
-      share.onclick = function () {
-        share.textContent = '正在准备…';
-        shareArtifact(url, name).then(function (ok) {
-          share.textContent = '转发到微信';
-          if (!ok) {
-            setStatus('statusText', '这台手机上浏览器不允许直接分享文件（需要 HTTPS）。\n请先点「下载」，再去微信里从"文件"转发；或让电脑启用 HTTPS（Tailscale）。', 'warn');
-          }
-        });
-      };
-      row.appendChild(share);
-      wrap.appendChild(row);
-      box.appendChild(wrap);
+      dl.className = 'dl-button';
+      dl.href = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask)
+        + '&index=' + index + '&name=' + encodeURIComponent(fileName);
+      dl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> 下载';
+      
+      item.appendChild(left);
+      item.appendChild(dl);
+      box.appendChild(item);
     });
-
-    var note = document.createElement('p');
-    note.className = 'share-note';
-    note.textContent = canShare
-      ? '点「转发到微信」会弹出系统分享面板，选微信即可（文件会一起带过去）。'
-      : '当前是 http 打开，浏览器不允许直接分享文件；点「下载」后再到微信里转发即可。若想一键转发，请让电脑启用 HTTPS（Tailscale），见文档。';
-    box.appendChild(note);
-    box.insertAdjacentHTML('beforeend', '<p class="hint">飞书群里也会收到同样一份。</p>');
+    
+    var tip = document.createElement('p');
+    tip.className = 'hint';
+    tip.style.cssText = 'font-size:12px;color:var(--label-tertiary);margin-top:10px;';
+    tip.textContent = '提示：在手机浏览器下载文件后，在系统的下载管理中点击「分享」即可直接发送至微信或飞书。';
+    box.appendChild(tip);
   }
 
   $('refreshStatus').onclick = function () { poll(); };
   $('newTask').onclick = function () {
     currentTask = '';
     files = [];
-    blobCache = {};
     renderFiles();
     setStatus('statusText', '');
     $('artifactList').innerHTML = '';
-    clearActiveSession();
-    showToast('已重置，请选取新文件');
+    $('customText').value = '';
+    try { localStorage.removeItem(taskKey); } catch (e) {}
   };
 
   document.addEventListener('visibilitychange', function () {
@@ -1946,13 +1642,6 @@ window.onerror = function (message, source, line, column) {
   window.addEventListener('focus', function () {
     if (currentTask) { poll(); }
   });
-
-  var customEl = $('customText');
-  if (customEl) {
-    customEl.addEventListener('input', function () {
-      try { localStorage.setItem(draftKey, customEl.value); } catch (e) {}
-    });
-  }
 
   $('sendCustom').onclick = function () {
     var text = $('customText').value.trim();
@@ -1967,51 +1656,20 @@ window.onerror = function (message, source, line, column) {
   dbg('可用预设：' + toArray(PRESETS).join(' / '));
 
   try {
-    // 1. 恢复口令
     var saved = localStorage.getItem(tokenKey);
     if (saved && saved.length >= 16) {
       token = saved;
       $('tokenInput').value = saved;
       connect();
     }
-
-    // 2. 恢复自定义指令草稿
-    var savedDraft = localStorage.getItem(draftKey);
-    if (savedDraft && $('customText')) {
-      $('customText').value = savedDraft;
+    var lastTask = localStorage.getItem(taskKey);
+    if (lastTask) {
+      currentTask = lastTask;
+      setBusy(true);
+      setStatus('statusText', '正在恢复上一任务状态 ' + lastTask + ' …', 'warn');
+      startPolling();
     }
-
-    // 3. 恢复历史会话（任务、状态与产物）——解决页面刷新重置问题！
-    var session = getSession();
-    if (session && session.taskId) {
-      currentTask = session.taskId;
-      
-      if (session.fileNames && session.fileNames.length > 0) {
-        var countEl = $('fileCount');
-        if (countEl && files.length === 0) {
-          countEl.textContent = '上次处理：' + session.fileNames.join('、');
-        }
-      }
-
-      if (session.status === 'ok' && session.artifacts && session.artifacts.length > 0) {
-        // 上次已完成：立即恢复结果与按钮，刷新绝不重置
-        setStatus('statusText', session.statusText || ('处理完成\n任务号：' + currentTask), session.statusCls || 'ok');
-        renderArtifacts(session.artifacts);
-        show($('actionCard'), true);
-        show($('afterRow'), true);
-        dbg('已恢复已完成任务：' + currentTask + '，共 ' + session.artifacts.length + ' 份产物');
-      } else if (session.status === 'queued' || session.status === 'running') {
-        // 上次未完成：恢复轮询继续追踪
-        setBusy(true);
-        setStatus('statusText', session.statusText || ('正在恢复任务 ' + currentTask + ' 状态…'), 'warn');
-        show($('actionCard'), true);
-        startPolling();
-        dbg('已恢复正在运行的任务：' + currentTask);
-      }
-    }
-  } catch (e) {
-    dbg('恢复本地会话异常: ' + e);
-  }
+  } catch (e) {}
 })();
 </script>
 </body>
