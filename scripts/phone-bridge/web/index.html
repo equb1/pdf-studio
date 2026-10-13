@@ -42,13 +42,51 @@
 // 页面错误收集器：**放在最前面**，任何后续脚本出错都能被记下来并显示出来
 // （这几轮我吃了"JS 静默中断、页面看起来正常"的亏，所以先保证错误一定能被看到）
 window.__pbErrors = [];
+// 通用复制：优先剪贴板 API；老安卓/受限浏览器回退到 execCommand（实测必须留这条兜底）
+window.__pbCopy = function (text, el) {
+  var flash = function () {
+    if (!el) { return; }
+    var old = el.getAttribute('data-label') || el.textContent || '';
+    el.textContent = '✅ 已复制';
+    setTimeout(function () { el.textContent = old; }, 1200);
+  };
+  var legacy = function () {
+    try {
+      var area = document.createElement('textarea');
+      area.value = String(text);
+      area.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.appendChild(area);
+      area.focus(); area.select(); area.setSelectionRange(0, String(text).length);
+      var ok = document.execCommand('copy');
+      document.body.removeChild(area);
+      if (ok) { flash(); return true; }
+    } catch (e) {}
+    return false;
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(String(text)).then(flash, legacy);
+      return true;
+    }
+  } catch (e) {}
+  return legacy();
+};
+
 window.onerror = function (message, source, line, column) {
   try {
     window.__pbErrors.push(String(message) + ' @' + line + ':' + column);
     var panel = document.getElementById('debug');
     if (panel) {
       panel.style.display = 'block';
-      panel.textContent = '⚠️ 页面出错：' + message + ' @' + line + ':' + column + '\n' + window.__pbErrors.join('\n');
+      var row = document.createElement('div');
+      row.className = 'dbg-row';
+      row.setAttribute('data-label', '⚠️ 页面出错：' + message + ' @' + line + ':' + column);
+      row.textContent = '⚠️ 页面出错：' + message + ' @' + line + ':' + column;
+      row.style.cssText = 'cursor:pointer;color:#fca5a5';
+      row.onclick = function () { if (window.__pbCopy) { window.__pbCopy(row.getAttribute('data-label'), row); } };
+      panel.appendChild(row);
+      var b = document.getElementById('debugToggle');
+      if (b) { b.textContent = '\ud83d\udc1e 收起（有错误）'; }
     }
   } catch (e) {}
   return false;
@@ -58,7 +96,7 @@ window.onerror = function (message, source, line, column) {
 <header>
   <h1>PDF 助手</h1>
   <p>选文件 → 点一个按钮 → 处理好的文件回这里（也会发到飞书）</p>
-  <p id="verline" style="margin:2px 0 0;font-size:12px;opacity:.85">页面版本 v6-inline</p>
+  <p id="verline" style="margin:2px 0 0;font-size:12px;opacity:.85">页面版本 v7-copy</p>
 </header>
 <main>
   <section class="card" id="authCard">
@@ -120,10 +158,24 @@ window.onerror = function (message, source, line, column) {
   var currentTask = '';
   var pollTimer = null;
 
-  var VERSION = 'v6-inline';
+  var VERSION = 'v7-copy';
   function $(id) { return document.getElementById(id); }
   function dbg(line) {
-    try { var el = $('debug'); if (el) { el.textContent = (el.textContent + '\n' + line).split('\n').slice(-12).join('\n'); } } catch (e) {}
+    try {
+      var el = $('debug');
+      if (!el) { return; }
+      // 每行单独一个元素：点一下就复制这一行（方便用户把报错直接发给我）
+      var row = document.createElement('div');
+      row.className = 'dbg-row';
+      row.setAttribute('data-label', String(line));
+      row.textContent = String(line);
+      row.style.cssText = 'cursor:pointer;padding:1px 0';
+      row.onclick = function () { if (window.__pbCopy) { window.__pbCopy(row.getAttribute('data-label'), row); } };
+      el.appendChild(row);
+      var rows = el.getElementsByClassName('dbg-row');
+      while (rows.length > 40) { el.removeChild(rows[0]); }
+      el.scrollTop = el.scrollHeight;
+    } catch (e) {}
   }
   window.onerror = function (msg, src, line, col) { dbg('❌ JS 错误: ' + msg + ' @' + line + ':' + col); };
   dbg('页面 ' + VERSION + ' 已加载 ' + new Date().toLocaleTimeString());
@@ -464,6 +516,6 @@ window.onerror = function (message, source, line, column) {
   </div>
 </div>
 <button id="debugToggle" type="button" onclick="var d=document.getElementById('debug');var b=document.getElementById('debugToggle');var on=!d.style.display||d.style.display==='none';d.style.display=on?'block':'none';b.textContent=on?'\ud83d\udc1e 收起':'\ud83d\udc1e 诊断';if(on&&window.__pbErrors&&window.__pbErrors.length){d.textContent='\u26a0\ufe0f 页面出错：\n'+window.__pbErrors.join('\n');}" style="position:fixed;right:10px;bottom:10px;z-index:101;padding:10px 14px;font-size:13px;border-radius:22px;background:#fff;opacity:.9">🐞 诊断</button>
-<div id="debug" style="display:none;bottom:60px;position:fixed;left:0;right:0;background:#111827;color:#f9fafb;font:12px/1.45 ui-monospace,Menlo,monospace;padding:8px 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;z-index:99"></div>
+<div id="debug" style="display:none;bottom:60px;position:fixed;left:0;right:0;background:#111827;color:#f9fafb;font:12px/1.45 ui-monospace,Menlo,monospace;padding:8px 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;z-index:99"><div id="debugBar" style="float:right;display:flex;gap:6px;margin-left:8px"><button type="button" id="copyAllBtn" style="padding:2px 10px;font-size:12px;font-weight:600" onclick="var d=document.getElementById('debug');if(window.__pbCopy){window.__pbCopy(d.innerText||d.textContent,this)}">复制全部</button><button type="button" id="closeDbgBtn" style="padding:2px 10px;font-size:12px;font-weight:600" onclick="var d=document.getElementById('debug');var b=document.getElementById('debugToggle');d.style.display='none';if(b){b.textContent='\ud83d\udc1e 诊断'}">收起 ✕</button></div></div>
 </body>
 </html>
