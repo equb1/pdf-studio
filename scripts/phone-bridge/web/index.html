@@ -109,8 +109,10 @@
   }
   window.onerror = function (msg, src, line, col) { dbg('❌ JS 错误: ' + msg + ' @' + line + ':' + col); };
   dbg('页面 ' + VERSION + ' 已加载 ' + new Date().toLocaleTimeString());
-  function show(el, yes) { el.className = el.className.replace(/ ?hidden/, '') + (yes ? '' : ' hidden'); }
-  function setStatus(id, text, cls) { var el = $(id); el.textContent = text; el.className = 'status ' + (cls || ''); }
+  // 元素不存在时**不能抛异常**：实测删掉一个卡片后，残留的
+  // 把后面的"渲染预设按钮"整段跳过，页面就变成"有卡片、没按钮" ✗。
+  function show(el, yes) { if (!el) { return; } el.className = el.className.replace(/ ?hidden/, '') + (yes ? '' : ' hidden'); }
+  function setStatus(id, text, cls) { var el = $(id); if (!el) { dbg('⚠️ 找不到状态位 #' + id); return; } el.textContent = text; el.className = 'status ' + (cls || ''); }
 
   function api(path, options) {
     options = options || {};
@@ -121,26 +123,37 @@
     });
   }
 
+  /** 渲染预设按钮。页面注入的 PRESETS 就能渲染，所以**加载时立刻显示**，不必等网络 ✓ */
+  function renderPresets(names) {
+    try {
+      var row = $('presetRow');
+      if (!row) { dbg('⚠️ 找不到 #presetRow'); return; }
+      var list = toArray(names || []);
+      row.innerHTML = '';
+      var hint = $('presetHint');
+      if (list.length === 0) {
+        if (hint) { hint.textContent = '（这台电脑还没配预设，用下面的输入框说要求即可）'; }
+        return;
+      }
+      if (hint) { hint.textContent = '按钮就是预设任务，点一下就用它处理你选的文件。'; }
+      list.forEach(function (name) {
+        var b = document.createElement('button');
+        b.className = 'preset'; b.type = 'button'; b.textContent = name;
+        b.onclick = function () { submit(name); };
+        row.appendChild(b);
+      });
+      dbg('已渲染预设按钮: ' + list.join(' / '));
+    } catch (e) { dbg('❌ 渲染预设按钮失败: ' + e); }
+  }
+
   function connect() {
     setStatus('authStatus', '正在连接…');
     api('/api/health').then(function (r) {
       if (r.status !== 200) { setStatus('authStatus', '口令不对，或者服务没开。再试一次。', 'err'); return; }
       try { localStorage.setItem(tokenKey, token); } catch (e) {}
-      show($('authCard'), false); show($('workCard'), true); show($('actionCard'), true); show($('resultCard'), true);
-      var names = toArray((r.body && r.body.presets) || PRESETS || []);
-      var row = $('presetRow');
-      row.innerHTML = '';
-      if (names.length === 0) {
-        $('presetHint').textContent = '（这台电脑还没配预设，用下面的输入框说要求即可）';
-      } else {
-        $('presetHint').textContent = '按钮就是预设任务，点一下就用它处理你选的文件。';
-        names.forEach(function (name) {
-          var b = document.createElement('button');
-          b.className = 'preset'; b.type = 'button'; b.textContent = name;
-          b.onclick = function () { submit(name); };
-          row.appendChild(b);
-        });
-      }
+      show($('authCard'), false); show($('workCard'), true); show($('actionCard'), true);
+      // 服务器返回的预设为准（配置改了不用刷新页面）；拿不到就用页面注入的那份
+      renderPresets((r.body && r.body.presets) || PRESETS);
     }).catch(function () { setStatus('authStatus', '连不上：检查手机和电脑是否在同一个 Tailscale 网络里。', 'err'); });
   }
 
@@ -199,6 +212,7 @@
   }
   try { pick(['anyInput', 'fileInput', 'imageInput']); dbg('已绑定选择入口 anyInput/fileInput/imageInput'); } catch (e) { dbg('❌ 绑定失败: ' + e); }
   addFiles([]);
+  renderPresets(PRESETS);   // 立刻显示按钮：即使还没填口令、或网络慢，也看得到
 
   function readBase64(file) {
     return new Promise(function (resolve) {
