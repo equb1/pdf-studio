@@ -41,7 +41,7 @@
 <header>
   <h1>PDF 助手</h1>
   <p>选文件 → 点一个按钮 → 处理好的文件回这里（也会发到飞书）</p>
-  <p id="verline" style="margin:2px 0 0;font-size:12px;opacity:.85">页面版本 v4-static</p>
+  <p id="verline" style="margin:2px 0 0;font-size:12px;opacity:.85">页面版本 v5-html-hidden</p>
 </header>
 <main>
   <section class="card" id="authCard">
@@ -103,7 +103,7 @@
   var currentTask = '';
   var pollTimer = null;
 
-  var VERSION = 'v3-debug';
+  var VERSION = 'v5-html-hidden';
   function $(id) { return document.getElementById(id); }
   function dbg(line) {
     try { var el = $('debug'); if (el) { el.textContent = (el.textContent + '\n' + line).split('\n').slice(-12).join('\n'); } } catch (e) {}
@@ -447,6 +447,6 @@
   </div>
 </div>
 <button id="debugToggle" type="button" style="position:fixed;right:10px;bottom:10px;z-index:101;padding:10px 14px;font-size:13px;border-radius:22px;background:#fff;opacity:.85">🐞 诊断</button>
-<div id="debug" style="position:fixed;left:0;right:0;bottom:0;background:#111827;color:#f9fafb;font:12px/1.45 ui-monospace,Menlo,monospace;padding:8px 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;z-index:99"></div>
+<div id="debug" style="display:none;bottom:60px;position:fixed;left:0;right:0;background:#111827;color:#f9fafb;font:12px/1.45 ui-monospace,Menlo,monospace;padding:8px 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;z-index:99"></div>
 </body>
 </html>
