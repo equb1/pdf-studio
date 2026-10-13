@@ -19,6 +19,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import { readFile, stat } from 'node:fs/promises'
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
@@ -65,6 +66,8 @@ export interface HttpBridgeOptions {
   presets: Record<string, string>
   /** 产物扩展名白名单（必须与状态接口一致，否则两处列出的顺序会不同）。 */
   allowedExtensions?: string[]
+  /** 给了证书就用 HTTPS；自签也行，手机上点一次「继续访问」即可。浏览器只在安全上下文里提供分享文件的能力。 */
+  tls?: { key: Buffer; cert: Buffer }
   /** 预设 → 名称输入框（页面据此弹窗）。 */
   presetFields?: Record<string, Array<{ key: string; label: string; suffix?: string }>>
   /** 预设按钮"名字"，页面只显示名字。 */
@@ -128,12 +131,13 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
   const token = options.token.trim()
   if (token.length < 16) throw new Error('httpToken 长度不足 16，拒绝启动（避免用弱令牌暴露端点）')
 
-  const server = createServer((req, res) => {
+  // handler 只做转发：真正的逻辑在下面定义的 handle（运行时才调用，所以顺序没问题）
+  const handler = (req: IncomingMessage, res: ServerResponse): void => {
     void handle(req, res).catch(error => {
       options.logger(`HTTP 处理失败：${String(error)}`)
       if (!res.headersSent) json(res, 500, { ok: false, error: 'internal' })
     })
-  })
+  }
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -187,10 +191,12 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
       if (picked === undefined) picked = listed[index]
       if (picked === undefined) { json(res, 404, { ok: false, error: 'not-found' }); return }
       const body = await readFile(picked)
+      const isInline = url.searchParams.get('inline') === '1'
+      const dispositionType = isInline ? 'inline' : 'attachment'
       res.writeHead(200, {
         'content-type': contentTypeOf(picked),
         'content-length': body.length,
-        'content-disposition': `attachment; filename="${encodeURIComponent(basename(picked))}"`,
+        'content-disposition': `${dispositionType}; filename="${encodeURIComponent(basename(picked))}"`,
         'cache-control': 'no-store',
       })
       res.end(body)
@@ -294,13 +300,19 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
     json(res, 404, { ok: false, error: 'not-found' })
   }
 
+  // 配了证书就走 HTTPS：浏览器只在安全上下文里允许「分享文件给微信」这一能力
+  const server = options.tls === undefined
+    ? createServer(handler)
+    : createHttpsServer({ key: options.tls.key, cert: options.tls.cert }, handler)
+
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.once('error', rejectPromise)
     server.listen(options.port, options.host, () => resolvePromise())
   })
   const address = server.address()
   const port = typeof address === 'object' && address !== null ? address.port : options.port
-  const url = `http://${options.host}:${port}/`
+  const scheme = options.tls === undefined ? 'http' : 'https'
+  const url = `${scheme}://${options.host}:${port}/`
   options.logger(`手机网页已启动：${url}（预设 ${Object.keys(options.presets).join('、')}）`)
 
   return {

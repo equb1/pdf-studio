@@ -1578,6 +1578,33 @@ window.onerror = function (message, source, line, column) {
     }).catch(function () { schedulePoll(5000); });
   }
 
+  // 转发到微信：走系统分享面板（Web Share API），微信会出现在面板里且文件一起带过去。
+  // **关键前提**：带文件的分享只在 HTTPS（安全上下文）下可用 —— http 页面上 navigator.canShare
+  // 根本不存在，所以这里必须先做能力检测，不能用就如实提示，不能假装成功。
+  function shareReady() {
+    try { return !!(window.isSecureContext && navigator.canShare && navigator.share); } catch (e) { return false; }
+  }
+  function shareArtifact(url, fileName, buttonEl, noteEl) {
+    var reset = function (text) { if (buttonEl) { buttonEl.textContent = text; } };
+    reset('准备中…');
+    return fetch(url).then(function (res) { return res.blob(); }).then(function (blob) {
+      var file = new File([blob], fileName, { type: blob.type || 'application/pdf' });
+      if (!(navigator.canShare && navigator.canShare({ files: [file] }))) {
+        throw new Error('这个浏览器不支持分享文件');
+      }
+      return navigator.share({ files: [file], title: fileName });
+    }).then(function () {
+      reset('转发到微信');
+      if (noteEl) { noteEl.textContent = '已发送 ✓'; }
+      return true;
+    }).catch(function (error) {
+      reset('转发到微信');
+      var why = String(error && error.message ? error.message : error);
+      if (noteEl) { noteEl.textContent = '分享没成功（' + why + '）：可先点「下载」，再到手机的文件/下载管理里长按 → 分享 → 微信。'; }
+      return false;
+    });
+  }
+
   function renderArtifacts(list) {
     var box = $('artifactList');
     box.innerHTML = '';
@@ -1595,6 +1622,10 @@ window.onerror = function (message, source, line, column) {
       var fileName = String(path).split('/').pop();
       var item = document.createElement('div');
       item.className = 'artifact-item';
+      // 每个产物自己的提示行（分享成功/失败都写在这里，不打扰别处）
+      var note = document.createElement('div');
+      note.className = 'artifact-desc';
+      note.style.cssText = 'flex:1 1 100%;font-size:12px;color:var(--label-tertiary);margin-top:2px;';
       
       var left = document.createElement('div');
       left.style.minWidth = '0';
@@ -1607,21 +1638,46 @@ window.onerror = function (message, source, line, column) {
       left.appendChild(nameEl);
       left.appendChild(subEl);
       
+      var artifactUrl = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask)
+        + '&index=' + index + '&name=' + encodeURIComponent(fileName);
       var dl = document.createElement('a');
       dl.className = 'dl-button';
-      dl.href = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask)
-        + '&index=' + index + '&name=' + encodeURIComponent(fileName);
+      dl.href = artifactUrl;
       dl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> 下载';
-      
+
+      // 转发到微信：HTTPS 下走系统分享面板（文件一起带过去）；http 下按钮仍然显示，
+      // 但会明确提示"先去下载"——如实告知比假装可用好。
+      var share = document.createElement('button');
+      share.type = 'button';
+      share.className = 'dl-button';
+      share.style.marginLeft = '8px';
+      share.textContent = '转发到微信';
+      if (!shareReady()) { share.style.opacity = '0.6'; }
+      share.onclick = function () {
+        if (!shareReady()) {
+          if (note) { note.textContent = '当前是 http 打开，浏览器不允许直接分享文件 —— 请先点「下载」，再到手机的文件管理里长按 → 分享 → 微信。'; }
+          return;
+        }
+        shareArtifact(artifactUrl, fileName, share, note);
+      };
+
+      var actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;align-items:center;flex:0 0 auto;';
+
       item.appendChild(left);
-      item.appendChild(dl);
+      actions.appendChild(dl);
+      actions.appendChild(share);
+      item.appendChild(actions);
+      item.appendChild(note);
       box.appendChild(item);
     });
     
     var tip = document.createElement('p');
     tip.className = 'hint';
     tip.style.cssText = 'font-size:12px;color:var(--label-tertiary);margin-top:10px;';
-    tip.textContent = '提示：在手机浏览器下载文件后，在系统的下载管理中点击「分享」即可直接发送至微信或飞书。';
+    tip.textContent = shareReady()
+      ? '提示：点「转发到微信」会弹出系统分享面板，选微信即可（文件会一起带过去）。'
+      : '提示：当前是 http 打开，浏览器不允许直接分享文件；点「下载」后再到微信里转发即可。想一键转发请用 https 地址打开本页。';
     box.appendChild(tip);
   }
 
