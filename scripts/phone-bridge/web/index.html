@@ -1191,8 +1191,16 @@ window.onerror = function (message, source, line, column) {
     options = options || {};
     options.headers = options.headers || {};
     options.headers['Authorization'] = 'Bearer ' + token;
+    var method = options.method || 'GET';
+    var startedAt = Date.now();
     return fetch(path, options).then(function (res) {
-      return res.json().catch(function () { return {}; }).then(function (body) { return { status: res.status, body: body }; });
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        dbg('[网络] ' + method + ' ' + path + ' → ' + res.status + '（' + (Date.now() - startedAt) + 'ms）');
+        return { status: res.status, body: body };
+      });
+    }).catch(function (error) {
+      dbg('[网络] ' + method + ' ' + path + ' → 失败：' + String(error) + '（' + (Date.now() - startedAt) + 'ms）');
+      throw error;
     });
   }
 
@@ -1710,22 +1718,77 @@ window.onerror = function (message, source, line, column) {
 
   dbg('页面 ' + VERSION + ' 已加载 ' + new Date().toLocaleTimeString());
   dbg('可用预设：' + toArray(PRESETS).join(' / '));
+  dbg('浏览器：' + (navigator.userAgent || '未知'));
+  dbg('当前地址：' + location.href.replace(/token=[^&]+/u, 'token=***'));
+  dbg('是否 HTTPS（安全上下文）：' + (window.isSecureContext ? '是 ✓（可以一键转发微信）' : '否 ✗（分享需要 HTTPS）'));
 
+  // ① 本地存储可用性自检。
+  // 这几轮"刷新就重置"最可能就是浏览器禁掉了本页存储，而旧代码把异常吞了 ✗ —— 现在明确报出来。
+  var storageOk = false;
   try {
-    var saved = localStorage.getItem(tokenKey);
-    if (saved && saved.length >= 16) {
-      token = saved;
-      $('tokenInput').value = saved;
-      connect();
+    localStorage.setItem('pb_probe', '1');
+    storageOk = localStorage.getItem('pb_probe') === '1';
+    localStorage.removeItem('pb_probe');
+  } catch (e) {
+    dbg('✗ 浏览器不允许本页保存数据：' + String(e));
+  }
+  dbg('本地存储可用：' + (storageOk ? '是 ✓' : '否 ✗（无痕模式或被禁用；请用带 #token= 的网址，见下）'));
+
+  // ② 支持把口令写在网址 # 后面：打开即登录，不依赖任何本地存储 ✓
+  //    例：https://xxx.ts.net/#token=你的口令     （# 后面的内容不会发到服务器 ✓）
+  try {
+    var hashMatch = /(?:^|[#&])token=([^&]+)/u.exec(location.hash || '');
+    if (hashMatch) {
+      var fromHash = decodeURIComponent(hashMatch[1]).trim();
+      if (fromHash.length >= 16) {
+        token = fromHash;
+        $('tokenInput').value = fromHash;
+        try { localStorage.setItem(tokenKey, fromHash); } catch (e) { dbg('✗ 存入口令失败：' + String(e)); }
+        dbg('已从网址 #token= 读取口令（长度 ' + fromHash.length + '）');
+      } else {
+        dbg('✗ 网址里的 #token= 太短（' + fromHash.length + ' 位），已忽略');
+      }
     }
+  } catch (e) { dbg('✗ 解析 #token 失败：' + String(e)); }
+
+  // ③ 本地口令 → 自动登录
+  if (!token) {
+    try {
+      var saved2 = localStorage.getItem(tokenKey);
+      dbg('本地保存的口令：' + (saved2 ? ('有（长度 ' + saved2.length + '）') : '没有'));
+      if (saved2 && saved2.length >= 16) {
+        token = saved2;
+        $('tokenInput').value = saved2;
+        dbg('已用本地口令自动登录');
+      }
+    } catch (e) { dbg('✗ 读取本地口令失败：' + String(e)); }
+  }
+  if (token) { connect(); } else { dbg('还没有口令 → 显示输入框'); }
+
+  // ④ 输入即保存（旧代码只在"连接成功"后才保存 ✗ —— 隧道慢或失败时就存不下来 ✓）
+  try {
+    var tokenInput = $('tokenInput');
+    if (tokenInput) {
+      tokenInput.oninput = function () {
+        var value = String(tokenInput.value).trim();
+        if (value.length < 16) { return; }
+        try { localStorage.setItem(tokenKey, value); dbg('口令已保存（长度 ' + value.length + '）'); }
+        catch (e) { dbg('✗ 存入口令失败：' + String(e)); }
+      };
+    }
+  } catch (e) { dbg('✗ 绑定口令输入失败：' + String(e)); }
+
+  // ⑤ 恢复上一个任务
+  try {
     var lastTask = localStorage.getItem(taskKey);
     if (lastTask) {
       currentTask = lastTask;
       setBusy(true);
       setStatus('statusText', '正在恢复上一任务状态 ' + lastTask + ' …', 'warn');
+      dbg('恢复上一任务：' + lastTask);
       startPolling();
     }
-  } catch (e) {}
+  } catch (e) { dbg('✗ 恢复任务失败：' + String(e)); }
 })();
 </script>
 </body>
