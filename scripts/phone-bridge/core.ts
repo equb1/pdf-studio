@@ -118,6 +118,12 @@ export interface BridgeConfig {
   httpPort: number
   /** 手机网页访问口令；**为空则不启动网页服务**（长度不足 16 会拒绝启动）。 */
   httpToken: string
+  /** 额外口令（每人一个，各自配额）：[{ token, label }]。 */
+  httpTokens: Array<{ token: string; label: string }>
+  /** 每分钟请求上限（按口令），默认 60。 */
+  rateLimitPerMinute: number
+  /** 每个口令每天的提交次数上限，默认 30。 */
+  maxTasksPerDay: number
   /** 请求体上限（字节），默认 1MB（含 base64 文件时会大一些，按需调）。 */
   maxBodyBytes: number
   /**
@@ -247,6 +253,9 @@ export function normalizeConfig(raw: Record<string, unknown>, overrides: Partial
     httpHost: str('httpHost', '127.0.0.1') as string,
     httpPort: num('httpPort', 8791),
     httpToken: str('httpToken', '') as string,
+    httpTokens: readTokens(raw.httpTokens),
+    rateLimitPerMinute: num('rateLimitPerMinute', 60),
+    maxTasksPerDay: num('maxTasksPerDay', 30),
     maxBodyBytes: num('maxBodyBytes', 8 * 1024 * 1024),
     presets: readPresets(raw.presets),
     presetFields: readPresetFields(raw.presetFields),
@@ -710,6 +719,20 @@ export function matchPreset(
     }
   }
   return undefined
+}
+
+/** 读额外口令表：只接受长度 ≥16 的字符串 token（弱口令直接丢 ✓）。 */
+function readTokens(raw: unknown): Array<{ token: string; label: string }> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<{ token: string; label: string }> = []
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object') continue
+    const token = (entry as { token?: unknown }).token
+    if (typeof token !== 'string' || token.trim().length < 16) continue
+    const label = (entry as { label?: unknown }).label
+    out.push({ token: token.trim(), label: typeof label === 'string' && label.trim() !== '' ? label.trim() : '用户' + (out.length + 2) })
+  }
+  return out
 }
 
 /** 读"预设 → 名称输入框"表；非法项直接丢（宁可少一个输入框，也不要崩）。 */

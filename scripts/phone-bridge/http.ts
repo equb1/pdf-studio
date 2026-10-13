@@ -58,6 +58,12 @@ export interface HttpBridgeOptions {
   host: string
   port: number
   token: string
+  /** 额外口令（每人一个）：各自独立计限流与每日配额；token 字段仍作为主口令保留。 */
+  tokens?: Array<{ token: string; label: string }>
+  /** 每分钟请求上限（按口令），默认 60。 */
+  rateLimitPerMinute?: number
+  /** 每个口令每天最多提交多少任务，默认 30。 */
+  maxTasksPerDay?: number
   outboxDir: string
   inboxDir: string
   /** 单次请求体上限（字节）。 */
@@ -156,10 +162,24 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
       return
     }
 
-    if (!tokenMatches(tokenOf(req, url), token)) {
+    // 多口令鉴权：主口令 + tokens 列表；命中哪个口令就按它的 label 记账（每人一个 token ✓）
+    const accepted = [{ token, label: '主人' }].concat(options.tokens ?? [])
+    const provided = tokenOf(req, url)
+    const hit = accepted.find(entry => tokenMatches(provided, entry.token))
+    if (hit === undefined) {
       json(res, 401, { ok: false, error: 'unauthorized' })
       return
     }
+    // 限流（按口令、60 秒滑动窗口）：公网服务必须防住扫描与刷次数
+    const nowMs = Date.now()
+    const limit = options.rateLimitPerMinute ?? 60
+    const recent = (rateBuckets.get(hit.label) ?? []).filter(at => nowMs - at < 60_000)
+    if (recent.length >= limit) {
+      json(res, 429, { ok: false, error: 'rate-limited', limit, note: '请求太频繁，请稍后再试' })
+      return
+    }
+    recent.push(nowMs)
+    rateBuckets.set(hit.label, recent)
 
     if (req.method === 'GET' && path === '/api/health') {
       json(res, 200, { ok: true, presets: Object.keys(options.presets), presetFields: options.presetFields ?? {}, outbox: options.outboxDir })
@@ -264,6 +284,18 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
       const instruction = typeof parsed.instruction === 'string' ? parsed.instruction.trim() : ''
       if (instruction === '') { json(res, 400, { ok: false, error: 'missing-instruction' }); return }
 
+      // 每日配额：每个口令每天最多提交 maxTasksPerDay 个任务
+      const day = new Date().toISOString().slice(0, 10)
+      const quotaKey = hit.label + '@' + day
+      const usedToday = dailyCounts.get(quotaKey) ?? 0
+      const maxPerDay = options.maxTasksPerDay ?? 30
+      if (usedToday >= maxPerDay) {
+        json(res, 429, { ok: false, error: 'daily-quota', limit: maxPerDay, note: '今天的次数已用完（' + hit.label + '），明天再来' })
+        return
+      }
+      dailyCounts.set(quotaKey, usedToday + 1)
+      options.logger(`[${hit.label}] 今日第 ${usedToday + 1}/${maxPerDay} 个任务`)
+
       const taskId = newTaskId()
       const taskDir = join(options.inboxDir, taskId)
       const savedPaths: string[] = []
@@ -301,6 +333,10 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
   }
 
   // 配了证书就走 HTTPS：浏览器只在安全上下文里允许「分享文件给微信」这一能力
+  // 按口令记账：分钟窗口用于限流，每日计数用于配额（内存即可，重启清零可接受）
+  const rateBuckets = new Map<string, number[]>()
+  const dailyCounts = new Map<string, number>()
+
   const server = options.tls === undefined
     ? createServer(handler)
     : createHttpsServer({ key: options.tls.key, cert: options.tls.cert }, handler)
