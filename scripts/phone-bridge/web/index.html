@@ -393,6 +393,37 @@
       openConfirmFor(instruction);
     }).catch(function () { openConfirmFor(instruction); });
   };
+
+  // ── 诊断条：默认隐藏，点右下角「🐞 诊断」才展开 ──────────────────────
+  // 日志照旧在后台累积（dbg 一直在写），所以展开时能看到之前的历史；
+  // 平时不占地方，也不用担心用户被日志吓到 ✓
+  (function initDebugToggle() {
+    try {
+      var panel = $('debug');
+      if (!panel) { return; }
+      panel.className = (panel.className + ' hidden').trim();
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.id = 'debugToggle';
+      button.textContent = '🐞 诊断';
+      button.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:101;padding:8px 12px;font-size:13px;border-radius:20px;opacity:.8;background:#fff';
+      var visible = false;
+      button.onclick = function () {
+        visible = !visible;
+        show(panel, visible);
+        button.textContent = visible ? '🐞 收起' : '🐞 诊断';
+        if (visible) { try { panel.scrollTop = panel.scrollHeight; } catch (e) {} }
+      };
+      if (document.body && document.body.appendChild) { document.body.appendChild(button); }
+      var clear = document.createElement('button');
+      clear.type = 'button';
+      clear.textContent = '清空';
+      clear.style.cssText = 'float:right;padding:2px 8px;font-size:12px;margin-left:8px';
+      clear.onclick = function () { panel.textContent = ''; };
+      panel.appendChild(clear);
+      dbg('诊断条已就绪（默认隐藏，点右下角「🐞 诊断」展开）');
+    } catch (e) { /* 诊断功能本身绝不能影响主流程 */ }
+  })();
 })();
 </script>
 <div id="modal" class="hidden" style="position:fixed;inset:0;background:rgba(17,24,39,.55);z-index:100;display:flex;align-items:flex-end">
