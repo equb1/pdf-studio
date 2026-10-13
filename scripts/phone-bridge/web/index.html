@@ -402,6 +402,7 @@
       var panel = $('debug');
       if (!panel) { return; }
       panel.className = (panel.className + ' hidden').trim();
+      panel.style.display = 'none';   // 行内样式：比 class 更硬，任何情况下都收得起来
       var button = document.createElement('button');
       button.type = 'button';
       button.id = 'debugToggle';
@@ -411,6 +412,7 @@
       button.onclick = function () {
         visible = !visible;
         show(panel, visible);
+        panel.style.display = visible ? 'block' : 'none';   // 双保险
         button.textContent = visible ? '🐞 收起' : '🐞 诊断';
         if (visible) { try { panel.scrollTop = panel.scrollHeight; } catch (e) {} }
       };
@@ -420,6 +422,16 @@
       clear.textContent = '清空';
       clear.style.cssText = 'float:right;padding:2px 8px;font-size:12px;margin-left:8px';
       clear.onclick = function () { panel.textContent = ''; };
+      var closeInner = document.createElement('button');
+      closeInner.type = 'button';
+      closeInner.textContent = '收起 ✕';
+      closeInner.style.cssText = 'float:right;padding:2px 10px;font-size:12px;margin-left:8px;font-weight:600';
+      closeInner.onclick = function () {
+        panel.className = (panel.className + ' hidden');
+        panel.style.display = 'none';
+        if (button) { button.textContent = '🐞 诊断'; }
+      };
+      panel.appendChild(closeInner);
       panel.appendChild(clear);
       dbg('诊断条已就绪（默认隐藏，点右下角「🐞 诊断」展开）');
     } catch (e) { /* 诊断功能本身绝不能影响主流程 */ }
