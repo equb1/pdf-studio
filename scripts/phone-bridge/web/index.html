@@ -41,6 +41,7 @@
 <header>
   <h1>PDF 助手</h1>
   <p>选文件 → 点一个按钮 → 处理好的文件回这里（也会发到飞书）</p>
+  <p id="verline" style="margin:2px 0 0;font-size:12px;opacity:.85">页面版本 v4-static</p>
 </header>
 <main>
   <section class="card" id="authCard">
@@ -401,40 +402,36 @@
     try {
       var panel = $('debug');
       if (!panel) { return; }
-      panel.className = (panel.className + ' hidden').trim();
-      panel.style.display = 'none';   // 行内样式：比 class 更硬，任何情况下都收得起来
-      var button = document.createElement('button');
-      button.type = 'button';
-      button.id = 'debugToggle';
+      panel.style.display = 'none';            // 行内样式：任何情况下都收得起来
+      var button = $('debugToggle');
+      if (!button) {                            // 兜底：HTML 里没有就现造一个
+        button = document.createElement('button');
+        button.id = 'debugToggle';
+        button.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:101;padding:10px 14px;font-size:13px;border-radius:22px;background:#fff';
+        if (document.body && document.body.appendChild) { document.body.appendChild(button); }
+      }
       button.textContent = '🐞 诊断';
-      button.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:101;padding:8px 12px;font-size:13px;border-radius:20px;opacity:.8;background:#fff';
-      var visible = false;
-      button.onclick = function () {
-        visible = !visible;
-        show(panel, visible);
-        panel.style.display = visible ? 'block' : 'none';   // 双保险
-        button.textContent = visible ? '🐞 收起' : '🐞 诊断';
-        if (visible) { try { panel.scrollTop = panel.scrollHeight; } catch (e) {} }
+      var setVisible = function (on) {
+        panel.style.display = on ? 'block' : 'none';
+        if (on) { panel.className = panel.className.replace(/ ?hidden/, ''); } else if (!/ hidden/.test(panel.className)) { panel.className += ' hidden'; }
+        button.textContent = on ? '🐞 收起' : '🐞 诊断';
+        if (on) { try { panel.scrollTop = panel.scrollHeight; } catch (e) {} }
       };
-      if (document.body && document.body.appendChild) { document.body.appendChild(button); }
-      var clear = document.createElement('button');
-      clear.type = 'button';
-      clear.textContent = '清空';
-      clear.style.cssText = 'float:right;padding:2px 8px;font-size:12px;margin-left:8px';
-      clear.onclick = function () { panel.textContent = ''; };
+      button.onclick = function () { setVisible(panel.style.display === 'none'); };
       var closeInner = document.createElement('button');
       closeInner.type = 'button';
       closeInner.textContent = '收起 ✕';
       closeInner.style.cssText = 'float:right;padding:2px 10px;font-size:12px;margin-left:8px;font-weight:600';
-      closeInner.onclick = function () {
-        panel.className = (panel.className + ' hidden');
-        panel.style.display = 'none';
-        if (button) { button.textContent = '🐞 诊断'; }
-      };
+      closeInner.onclick = function () { setVisible(false); };
       panel.appendChild(closeInner);
+      var clear = document.createElement('button');
+      clear.type = 'button';
+      clear.textContent = '清空';
+      clear.style.cssText = 'float:right;padding:2px 8px;font-size:12px;margin-left:8px';
+      clear.onclick = function () { panel.textContent = ''; panel.appendChild(closeInner); panel.appendChild(clear); };
       panel.appendChild(clear);
-      dbg('诊断条已就绪（默认隐藏，点右下角「🐞 诊断」展开）');
-    } catch (e) { /* 诊断功能本身绝不能影响主流程 */ }
+      dbg('诊断条已就绪（默认隐藏；点右下角「🐞 诊断」展开）');
+    } catch (e) { /* 诊断功能绝不能影响主流程 */ }
   })();
 })();
 </script>
@@ -449,6 +446,7 @@
     </div>
   </div>
 </div>
+<button id="debugToggle" type="button" style="position:fixed;right:10px;bottom:10px;z-index:101;padding:10px 14px;font-size:13px;border-radius:22px;background:#fff;opacity:.85">🐞 诊断</button>
 <div id="debug" style="position:fixed;left:0;right:0;bottom:0;background:#111827;color:#f9fafb;font:12px/1.45 ui-monospace,Menlo,monospace;padding:8px 10px;max-height:40vh;overflow:auto;white-space:pre-wrap;z-index:99"></div>
 </body>
 </html>
