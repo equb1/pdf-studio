@@ -84,11 +84,6 @@
           }
         }
       ]
-    ],
-    "extra": {
-      "eas": {
-        "projectId": "把 eas init 生成的 projectId 填这里"
-      }
-    }
+    ]
   }
 }
