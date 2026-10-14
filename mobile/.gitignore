@@ -39,3 +39,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# 秘密：绝不提交
+.env
+.env.local
+.env.*.local

@@ -13,13 +13,16 @@ import {
   StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import Constants from 'expo-constants';
 import { WebView } from 'react-native-webview';
 import { useSharedPdf, type SharedPdf } from './src/share';
 import { ensureReady, watchTask } from './src/notify';
 
-// ── 内置配置（换人只改这两行：token 换成对方的即可）──
-const SERVER = 'https://macbook-air-2.tailad752a.ts.net';
-const TOKEN = 'oyi4oDHszkPD3DxvDVyhj9O5N74kNfkS';
+// ── 地址与口令来自构建时注入的环境变量（app.config.ts + EAS env vars / 本地 .env）──
+// 代码里**不留任何秘密** ✓ 换人/换口令只需改环境变量并重新构建 ✓
+const extra = (Constants.expoConfig?.extra ?? {}) as { server?: string; token?: string };
+const SERVER = String(extra.server ?? '');
+const TOKEN = String(extra.token ?? '');
 const START_URL = `${SERVER}/#token=${TOKEN}`;
 
 export default function App() {
