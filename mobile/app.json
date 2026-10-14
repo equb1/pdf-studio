@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "试卷工坊",
-    "slug": "shijuan-gongfang",
+    "slug": "pdf-studio",
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "shijuangkf",
@@ -84,6 +84,12 @@
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b80af64f-3e36-45cd-94f9-bdfd0fd9d602"
+      }
+    },
+    "owner": "npcdyc"
   }
 }
