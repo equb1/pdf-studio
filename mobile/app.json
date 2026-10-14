@@ -31,16 +31,6 @@
           "backgroundColor": "#1d4ed8"
         }
       ],
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "minSdkVersion": 24,
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35
-          }
-        }
-      ],
       "expo-share-intent"
     ],
     "extra": {
@@ -48,6 +38,10 @@
         "projectId": "b80af64f-3e36-45cd-94f9-bdfd0fd9d602"
       }
     },
-    "owner": "npcdyc"
+    "owner": "npcdyc",
+    "ios": {
+      "bundleIdentifier": "com.zhuangz.shijuangkf",
+      "supportsTablet": false
+    }
   }
 }
