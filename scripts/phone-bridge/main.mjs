@@ -588,7 +588,7 @@ export function createBridge(config, deps = {}) {
     if (config.maxQueueLength > 0 && queue.size >= config.maxQueueLength) throw new Error('queue-full')
     const expanded = expandPreset(text, config.presets, { prefix: config.prefix })
     if (expanded.preset !== undefined) logger(`网页任务命中预设「${expanded.preset}」`)
-    const id = `web:${taskId}`
+    lastWebTaskId = taskId
     ledger.mark(id, 'queued', now())
     persist()
     void queue.enqueue({
@@ -598,6 +598,8 @@ export function createBridge(config, deps = {}) {
     }).then(persist, error => logger(`网页任务异常：${String(error)}`))
     return taskId
   }
+
+  let lastWebTaskId = undefined
 
   /** 网页轮询状态：账本 + outbox/<taskId> 里的产物清单。 */
   const taskStatus = taskId => {
@@ -614,7 +616,24 @@ export function createBridge(config, deps = {}) {
     }
   }
 
-  return { pollOnce, handleMessage, handleAttachment, submitTask, taskStatus, recordArtifacts, queue, ledger, pending, persist, lark, collectOutbox }
+  /** 获取最近一个网页任务（供网页刷新或重连后恢复展示）。 */
+  const latestTask = () => {
+    let id = lastWebTaskId
+    if (!id) {
+      const all = ledger.toJSON ? ledger.toJSON() : {}
+      const webKeys = Object.keys(all).filter(k => k.startsWith('web:'))
+      if (webKeys.length > 0) {
+        webKeys.sort((a, b) => (all[a]?.at ?? 0) - (all[b]?.at ?? 0))
+        id = webKeys[webKeys.length - 1].slice(4)
+      }
+    }
+    if (!id) return undefined
+    const info = taskStatus(id)
+    if (!info) return undefined
+    return { taskId: id, status: info.status, artifacts: info.artifacts }
+  }
+
+  return { pollOnce, handleMessage, handleAttachment, submitTask, taskStatus, latestTask, recordArtifacts, queue, ledger, pending, persist, lark, collectOutbox }
 }
 
 /**
@@ -763,7 +782,7 @@ export async function main(argv = process.argv.slice(2)) {
   logger(`桥接器启动：chat=${config.chatId} 轮询=${config.pollMs}ms 超时=${config.timeoutMs}ms outbox=${config.outboxDir}`)
 
   const bridge = createBridge({ ...config, dryRun: args.dryRun }, { logger, ledger, pending })
-  const { queue, persist, pollOnce, handleMessage, handleAttachment, submitTask, taskStatus } = bridge
+  const { queue, persist, pollOnce, handleMessage, handleAttachment, submitTask, taskStatus, latestTask } = bridge
 
   // 手机网页（可选）：配了 httpToken 才启动；没配就完全不开端口（fail-closed）
   let web = null
@@ -787,6 +806,7 @@ export async function main(argv = process.argv.slice(2)) {
         logger,
         submit: task => { submitTask(task) },
         status: taskId => taskStatus(taskId),
+        latestTask: () => latestTask(),
       })
       logger(`手机网页地址：${web.url}`)
     } catch (error) {

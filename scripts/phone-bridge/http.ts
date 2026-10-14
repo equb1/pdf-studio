@@ -85,6 +85,8 @@ export interface HttpBridgeOptions {
   submit: (task: { text: string; inputs: string[]; taskId: string }) => void
   /** 查任务状态。 */
   status: (taskId: string) => { status: string; artifacts: string[] } | undefined
+  /** 查最近一个任务（用于网页刷新或重新打开时恢复状态）。 */
+  latestTask?: () => { taskId: string; status: string; artifacts: string[] } | undefined
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -182,7 +184,14 @@ export async function startHttpBridge(options: HttpBridgeOptions): Promise<{ clo
     rateBuckets.set(hit.label, recent)
 
     if (req.method === 'GET' && path === '/api/health') {
-      json(res, 200, { ok: true, presets: Object.keys(options.presets), presetFields: options.presetFields ?? {}, outbox: options.outboxDir })
+      const lastTask = options.latestTask?.()
+      json(res, 200, {
+        ok: true,
+        presets: Object.keys(options.presets),
+        presetFields: options.presetFields ?? {},
+        outbox: options.outboxDir,
+        ...(lastTask !== undefined && lastTask.status !== undefined ? { lastTask } : {}),
+      })
       return
     }
 

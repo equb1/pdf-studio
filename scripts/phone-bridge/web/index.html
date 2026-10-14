@@ -503,47 +503,127 @@
     color: var(--danger);
   }
 
-  /* Artifacts */
-  #artifactList { margin-top: 12px; }
+  /* Artifacts 产物展示卡片：全名自然换行，操作按钮尺寸严丝合缝 */
+  #artifactList { margin-top: 14px; }
   .artifact-item {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
     gap: 12px;
-    padding: 12px 14px;
+    padding: 14px 16px;
     background: var(--bg-subtle);
     border: 1px solid var(--separator);
     border-radius: var(--radius-md);
-    margin-top: 8px;
+    margin-top: 10px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   }
+  .artifact-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .artifact-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    background: rgba(255, 59, 48, 0.09);
+    color: #ff3b30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .artifact-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+  .artifact-info {
+    flex: 1;
+    min-width: 0;
+  }
+  /* 允许长文件名完整展示并按需自然换行，绝不强行被...截断 */
   .artifact-title {
-    font-size: 14px;
+    font-size: 14.5px;
     font-weight: 600;
     color: var(--label-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 1.45;
+    word-break: break-all;
+    white-space: normal;
   }
   .artifact-desc {
     font-size: 12px;
     color: var(--label-tertiary);
-    margin-top: 2px;
+    margin-top: 3px;
+    line-height: 1.4;
   }
-  .dl-button {
-    text-decoration: none;
+  .artifact-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+  }
+  /* 统一规范的操作胶囊按钮：高度、字号、圆角完全一致 */
+  .btn-action {
+    flex: 1;
+    height: 36px;
+    padding: 0 14px;
+    border-radius: var(--radius-pill);
     font-size: 13px;
     font-weight: 600;
-    padding: 7px 14px;
-    border-radius: var(--radius-pill);
-    background: var(--accent);
-    color: #ffffff;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    justify-content: center;
+    gap: 6px;
+    text-decoration: none;
+    border: 1px solid transparent;
+    cursor: pointer;
+    font-family: inherit;
+    box-sizing: border-box;
+    transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
+    user-select: none;
+    -webkit-user-select: none;
+    line-height: normal;
+  }
+  .btn-action svg {
+    width: 15px;
+    height: 15px;
     flex-shrink: 0;
   }
-  .dl-button:active { opacity: 0.8; }
-  .dl-button svg { width: 14px; height: 14px; }
+  /* 转发微信：纯正微信官方品牌绿 */
+  .btn-action.btn-wechat {
+    background: #07c160;
+    color: #ffffff;
+    border-color: #07c160;
+    box-shadow: 0 2px 6px rgba(7, 193, 96, 0.25);
+  }
+  .btn-action.btn-wechat:hover {
+    background: #06ad56;
+    border-color: #06ad56;
+  }
+  .btn-action.btn-wechat:active {
+    background: #059b4c;
+    opacity: 0.9;
+    transform: scale(0.98);
+  }
+  /* 本地下载：中性雅致白底描边，尺寸与微信按钮严丝合缝 */
+  .btn-action.btn-download {
+    background: var(--bg-card);
+    color: var(--label-primary);
+    border-color: var(--separator);
+  }
+  .btn-action.btn-download:hover {
+    background: var(--fill-quaternary);
+  }
+  .btn-action.btn-download:active {
+    background: var(--fill-tertiary);
+    transform: scale(0.98);
+  }
+  .artifact-note {
+    font-size: 12px;
+    color: var(--label-tertiary);
+    line-height: 1.4;
+    padding: 2px 0 0;
+  }
 
   /* Modal Sheet */
   #modal {
@@ -1227,13 +1307,47 @@ window.onerror = function (message, source, line, column) {
       try { localStorage.setItem(tokenKey, token); } catch (e) {}
       show($('authCard'), false);
       show($('workCard'), true);
-      show($('actionCard'), files.length > 0 || !!currentTask);
-      
-      $('netIndicator').className = 'status-pill online';
-      $('verline').textContent = '已连接';
-      
+
       presetFields = (r.body && r.body.presetFields) || {};
       renderPresets((r.body && r.body.presets) || PRESETS);
+
+      $('netIndicator').className = 'status-pill online';
+      $('verline').textContent = '已连接';
+
+      // 服务端最新任务同步（即使本地存储曾被清空，只要连接上就能无缝找回上一产物与状态）
+      if (r.body && r.body.lastTask && r.body.lastTask.taskId) {
+        var srv = r.body.lastTask;
+        var local = getLastTask();
+        if (!local || !local.taskId || local.taskId === srv.taskId) {
+          currentTask = srv.taskId;
+          var msg = srv.status === 'ok'
+            ? ('处理完成\n任务号：' + currentTask)
+            : ('任务状态：' + srv.status + '\n任务号：' + currentTask);
+          saveLastTask({
+            taskId: currentTask,
+            status: srv.status,
+            statusText: msg,
+            artifacts: srv.artifacts || [],
+            time: Date.now()
+          });
+          if (srv.status === 'ok' && srv.artifacts && srv.artifacts.length > 0) {
+            setStatus('statusText', msg, 'ok');
+            renderArtifacts(srv.artifacts);
+            show($('afterRow'), true);
+            show($('actionCard'), true);
+            dbg('已从服务端同步恢复产物（' + srv.artifacts.length + ' 份文件）');
+          } else if (srv.status === 'running' || srv.status === 'queued') {
+            setBusy(true);
+            setStatus('statusText', msg, 'warn');
+            show($('afterRow'), true);
+            show($('actionCard'), true);
+            startPolling();
+          }
+        }
+      }
+
+      var hasTask = !!currentTask || (getLastTask() && getLastTask().taskId);
+      show($('actionCard'), files.length > 0 || hasTask);
       dbg('已连接成功，可用预设: ' + Object.keys(r.body && r.body.presets || {}).join(', '));
     }).catch(function () {
       setStatus('authStatus', '无法连接：请确认手机和电脑在同一 Wi-Fi 或已连接 Tailscale。', 'err');
@@ -1286,6 +1400,99 @@ window.onerror = function (message, source, line, column) {
     }, false);
   }
 
+  // ── 本地文件持久化缓存（IndexedDB）：刷新页面后自动恢复已选文件，绝不丢失 ──────────
+  var dbPromise = null;
+  function getDb() {
+    if (!window.indexedDB) { return Promise.resolve(null); }
+    if (dbPromise) { return dbPromise; }
+    dbPromise = new Promise(function (resolve) {
+      try {
+        var req = indexedDB.open('pdf_studio_files_db', 1);
+        req.onupgradeneeded = function (e) {
+          var db = e.target.result;
+          if (!db.objectStoreNames.contains('files')) {
+            db.createObjectStore('files', { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = function (e) { resolve(e.target.result); };
+        req.onerror = function () { resolve(null); };
+      } catch (e) { resolve(null); }
+    });
+    return dbPromise;
+  }
+
+  function readAsArrayBuffer(file) {
+    if (file && typeof file.arrayBuffer === 'function') {
+      return file.arrayBuffer();
+    }
+    return new Promise(function (resolve) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(fr.result); };
+      fr.onerror = function () { resolve(new ArrayBuffer(0)); };
+      fr.readAsArrayBuffer(file);
+    });
+  }
+
+  function saveStoredFiles(fileList) {
+    return getDb().then(function (db) {
+      if (!db) { return; }
+      if (!fileList || fileList.length === 0) {
+        try {
+          var tx = db.transaction('files', 'readwrite');
+          tx.objectStore('files').delete('cached_inputs');
+        } catch (e) {}
+        return;
+      }
+      return Promise.all(fileList.map(function (f) {
+        return readAsArrayBuffer(f).then(function (buf) {
+          return { name: f.name, type: f.type || 'application/pdf', lastModified: f.lastModified || Date.now(), buffer: buf };
+        });
+      })).then(function (records) {
+        try {
+          var tx = db.transaction('files', 'readwrite');
+          tx.objectStore('files').put({ id: 'cached_inputs', files: records });
+        } catch (e) {}
+      });
+    }).catch(function (e) { dbg('缓存已选文件到本地失败：' + e); });
+  }
+
+  function loadStoredFiles() {
+    return getDb().then(function (db) {
+      if (!db) { return []; }
+      return new Promise(function (resolve) {
+        try {
+          var tx = db.transaction('files', 'readonly');
+          var req = tx.objectStore('files').get('cached_inputs');
+          req.onsuccess = function (e) {
+            var item = e.target.result;
+            if (item && item.files && item.files.length > 0) {
+              var restored = item.files.map(function (rec) {
+                return new File([rec.buffer], rec.name, {
+                  type: rec.type || 'application/pdf',
+                  lastModified: rec.lastModified || Date.now()
+                });
+              });
+              resolve(restored);
+            } else {
+              resolve([]);
+            }
+          };
+          req.onerror = function () { resolve([]); };
+        } catch (e) { resolve([]); }
+      });
+    }).catch(function () { return []; });
+  }
+
+  function clearStoredFiles() {
+    return getDb().then(function (db) {
+      if (!db) { return; }
+      try {
+        var tx = db.transaction('files', 'readwrite');
+        tx.objectStore('files').delete('cached_inputs');
+      } catch (e) {}
+    }).catch(function () {});
+  }
+
   function addFiles(picked) {
     picked.forEach(function (file) {
       if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {
@@ -1296,6 +1503,7 @@ window.onerror = function (message, source, line, column) {
       if (!dup) { files.push(file); }
     });
     renderFiles();
+    saveStoredFiles(files);
   }
 
   function renderFiles() {
@@ -1324,6 +1532,7 @@ window.onerror = function (message, source, line, column) {
       del.onclick = function () {
         files.splice(index, 1);
         renderFiles();
+        saveStoredFiles(files);
       };
       
       li.appendChild(ext);
@@ -1338,9 +1547,10 @@ window.onerror = function (message, source, line, column) {
       : ('已选 ' + files.length + ' 份文件' + (files.length > 1 ? '（将合并处理）' : ''));
     $('fileCount').textContent = countText;
 
-    // 只有在已选文件（或正在处理任务时），才显示操作指令区域
+    // 只有在已选文件（或存在未清理的上一任务产物时），才显示操作指令区域
     var isAuthed = !$('authCard') || $('authCard').classList.contains('hidden');
-    show($('actionCard'), isAuthed && (files.length > 0 || !!currentTask));
+    var hasActiveTask = !!currentTask || !!getLastTask();
+    show($('actionCard'), isAuthed && (files.length > 0 || hasActiveTask));
   }
 
   $('fileInput').onchange = function (event) {
@@ -1542,12 +1752,51 @@ window.onerror = function (message, source, line, column) {
       }
       currentTask = r.body.taskId;
       try { localStorage.setItem(taskKey, currentTask); } catch (e) {}
-      setStatus('statusText', '已进入处理队列：' + String(instruction).split('\n')[0] + '\n任务号：' + currentTask + '\n通常耗时 1~3 分钟，正在自动获取进度…', 'warn');
+      var msg = '已进入处理队列：' + String(instruction).split('\n')[0] + '\n任务号：' + currentTask + '\n通常耗时 1~3 分钟，正在自动获取进度…';
+      setStatus('statusText', msg, 'warn');
+      saveLastTask({
+        taskId: currentTask,
+        status: 'queued',
+        statusText: msg,
+        artifacts: [],
+        time: Date.now()
+      });
       startPolling();
     }).catch(function (e) {
       setBusy(false);
       setStatus('statusText', '连接异常：' + e, 'err');
     });
+  }
+
+  var lastTaskKey = 'pdf-helper-last-task-data';
+  function saveLastTask(data) {
+    try {
+      var s = JSON.stringify(data);
+      localStorage.setItem(lastTaskKey, s);
+      sessionStorage.setItem(lastTaskKey, s);
+      if (data && data.taskId) {
+        localStorage.setItem(taskKey, data.taskId);
+        sessionStorage.setItem(taskKey, data.taskId);
+      }
+    } catch (e) { dbg('✗ 记录任务数据失败：' + String(e)); }
+  }
+  function getLastTask() {
+    try {
+      var s = localStorage.getItem(lastTaskKey) || sessionStorage.getItem(lastTaskKey);
+      if (s) { return JSON.parse(s); }
+      var tid = localStorage.getItem(taskKey) || sessionStorage.getItem(taskKey);
+      if (tid) { return { taskId: tid, status: 'running', artifacts: [] }; }
+      return null;
+    } catch (e) { return null; }
+  }
+  function clearSavedTask() {
+    try {
+      localStorage.removeItem(lastTaskKey);
+      sessionStorage.removeItem(lastTaskKey);
+      localStorage.removeItem(taskKey);
+      sessionStorage.removeItem(taskKey);
+      localStorage.removeItem('pdf-helper-custom-draft');
+    } catch (e) {}
   }
 
   function schedulePoll(ms) {
@@ -1575,11 +1824,20 @@ window.onerror = function (message, source, line, column) {
       
       setStatus('statusText', msg, s === 'ok' ? 'ok' : ((s === 'error' || s === 'timeout') ? 'err' : 'warn'));
       
+      var arts = toArray(r.body.artifacts || []);
+      // 关键：状态与产物每次更新都保存到本地，刷新绝不重置
+      saveLastTask({
+        taskId: currentTask,
+        status: s,
+        statusText: msg,
+        artifacts: arts,
+        time: Date.now()
+      });
+
       if (s === 'ok' || s === 'error' || s === 'timeout') {
         if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
         setBusy(false);
-        try { localStorage.removeItem(taskKey); } catch (e) {}
-        renderArtifacts(toArray(r.body.artifacts || []));
+        renderArtifacts(arts);
       } else {
         schedulePoll(Date.now() - startedAt > 30000 ? 5000 : 2000);
       }
@@ -1587,28 +1845,61 @@ window.onerror = function (message, source, line, column) {
   }
 
   // 转发到微信：走系统分享面板（Web Share API），微信会出现在面板里且文件一起带过去。
-  // **关键前提**：带文件的分享只在 HTTPS（安全上下文）下可用 —— http 页面上 navigator.canShare
-  // 根本不存在，所以这里必须先做能力检测，不能用就如实提示，不能假装成功。
   function shareReady() {
     try { return !!(window.isSecureContext && navigator.canShare && navigator.share); } catch (e) { return false; }
   }
+
+  var blobCache = {}; // 内存预热缓存，确保点击分享时能保留用户手势同步唤起
+
+  function prefetchArtifact(url) {
+    if (blobCache[url]) return;
+    fetch(url).then(function (res) {
+      if (!res.ok) return null;
+      return res.blob();
+    }).then(function (blob) {
+      if (blob) { blobCache[url] = blob; }
+    }).catch(function () {});
+  }
+
   function shareArtifact(url, fileName, buttonEl, noteEl) {
-    var reset = function (text) { if (buttonEl) { buttonEl.textContent = text; } };
-    reset('准备中…');
-    return fetch(url).then(function (res) { return res.blob(); }).then(function (blob) {
+    var originalHtml = buttonEl.innerHTML;
+    buttonEl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;animation:spin 0.8s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10"></path></svg> 准备中…';
+    buttonEl.disabled = true;
+
+    var doShareWithBlob = function (blob) {
       var file = new File([blob], fileName, { type: blob.type || 'application/pdf' });
-      if (!(navigator.canShare && navigator.canShare({ files: [file] }))) {
-        throw new Error('这个浏览器不支持分享文件');
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        return navigator.share({ files: [file], title: fileName });
       }
-      return navigator.share({ files: [file], title: fileName });
+      return navigator.share({ title: fileName, url: window.location.origin + url });
+    };
+
+    var p = blobCache[url]
+      ? Promise.resolve(blobCache[url])
+      : fetch(url).then(function (res) { return res.blob(); });
+
+    return p.then(function (blob) {
+      blobCache[url] = blob;
+      return doShareWithBlob(blob);
     }).then(function () {
-      reset('转发到微信');
-      if (noteEl) { noteEl.textContent = '已发送 ✓'; }
+      buttonEl.innerHTML = originalHtml;
+      buttonEl.disabled = false;
+      if (noteEl) {
+        noteEl.textContent = '已呼起微信分享 ✓';
+        noteEl.style.color = 'var(--success)';
+      }
       return true;
     }).catch(function (error) {
-      reset('转发到微信');
+      buttonEl.innerHTML = originalHtml;
+      buttonEl.disabled = false;
+      if (error && (error.name === 'AbortError' || String(error).indexOf('AbortError') !== -1)) {
+        return false;
+      }
       var why = String(error && error.message ? error.message : error);
-      if (noteEl) { noteEl.textContent = '分享没成功（' + why + '）：可先点「下载」，再到手机的文件/下载管理里长按 → 分享 → 微信。'; }
+      if (noteEl) {
+        noteEl.textContent = '分享未完成（' + why + '）：请点旁边「下载」，在手机文件管理中长按分享至微信。';
+        noteEl.style.color = 'var(--danger)';
+      }
       return false;
     });
   }
@@ -1623,58 +1914,76 @@ window.onerror = function (message, source, line, column) {
     
     var head = document.createElement('div');
     head.style.cssText = 'font-size:13px;font-weight:600;color:var(--success);margin-bottom:6px;';
-    head.textContent = '处理完成，可下载文件（' + list.length + ' 份）：';
+    head.textContent = '处理完成，可转发或下载文件（' + list.length + ' 份）：';
     box.appendChild(head);
     
     list.forEach(function (path, index) {
       var fileName = String(path).split('/').pop();
       var item = document.createElement('div');
       item.className = 'artifact-item';
-      // 每个产物自己的提示行（分享成功/失败都写在这里，不打扰别处）
-      var note = document.createElement('div');
-      note.className = 'artifact-desc';
-      note.style.cssText = 'flex:1 1 100%;font-size:12px;color:var(--label-tertiary);margin-top:2px;';
-      
-      var left = document.createElement('div');
-      left.style.minWidth = '0';
+
+      // 1. 顶部：PDF 徽标与完整文件名（自然折行，绝不强行...省略）
+      var header = document.createElement('div');
+      header.className = 'artifact-header';
+
+      var icon = document.createElement('div');
+      icon.className = 'artifact-icon';
+      icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>';
+
+      var info = document.createElement('div');
+      info.className = 'artifact-info';
+
       var nameEl = document.createElement('div');
       nameEl.className = 'artifact-title';
       nameEl.textContent = fileName;
+
       var subEl = document.createElement('div');
       subEl.className = 'artifact-desc';
-      subEl.textContent = '下载后可直接在手机中转发';
-      left.appendChild(nameEl);
-      left.appendChild(subEl);
-      
+      subEl.textContent = 'PDF 文档 · 处理完成可直接保存或转发';
+
+      info.appendChild(nameEl);
+      info.appendChild(subEl);
+      header.appendChild(icon);
+      header.appendChild(info);
+      item.appendChild(header);
+
       var artifactUrl = '/api/artifact?token=' + encodeURIComponent(token) + '&taskId=' + encodeURIComponent(currentTask)
         + '&index=' + index + '&name=' + encodeURIComponent(fileName);
+
+      // 后台静默预热 Blob
+      prefetchArtifact(artifactUrl);
+
+      // 2. 按钮操作区：下载与转发微信尺寸大小号严格相同！
+      var actions = document.createElement('div');
+      actions.className = 'artifact-actions';
+
+      // 转发到微信：微信经典品牌绿 + 官方双气泡图标
+      var share = document.createElement('button');
+      share.type = 'button';
+      share.className = 'btn-action btn-wechat';
+      share.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.5 4C5.36 4 2 6.91 2 10.5c0 2 1.05 3.8 2.72 5.03l-.68 2.06a.5.5 0 0 0 .62.63l2.45-.75c.74.22 1.54.34 2.39.34.2 0 .4-.01.6-.02A6.47 6.47 0 0 1 10 16c0-3.87 3.58-7 8-7 .4 0 .8.03 1.18.08C18.17 6.06 14.2 4 9.5 4zm8.5 7c-3.59 0-6.5 2.46-6.5 5.5 0 1.63.85 3.1 2.2 4.1l-.54 1.65a.4.4 0 0 0 .5.5l1.96-.6c.59.18 1.23.27 1.88.27 3.59 0 6.5-2.46 6.5-5.5S21.59 11 18 11z"/></svg> 转发到微信';
+      if (!shareReady()) { share.style.opacity = '0.6'; }
+
+      // 下载：中性雅致卡片白底，尺寸与微信按钮严丝合缝
       var dl = document.createElement('a');
-      dl.className = 'dl-button';
+      dl.className = 'btn-action btn-download';
       dl.href = artifactUrl;
       dl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> 下载';
 
-      // 转发到微信：HTTPS 下走系统分享面板（文件一起带过去）；http 下按钮仍然显示，
-      // 但会明确提示"先去下载"——如实告知比假装可用好。
-      var share = document.createElement('button');
-      share.type = 'button';
-      share.className = 'dl-button';
-      share.style.marginLeft = '8px';
-      share.textContent = '转发到微信';
-      if (!shareReady()) { share.style.opacity = '0.6'; }
+      var note = document.createElement('div');
+      note.className = 'artifact-note';
+
       share.onclick = function () {
         if (!shareReady()) {
-          if (note) { note.textContent = '当前是 http 打开，浏览器不允许直接分享文件 —— 请先点「下载」，再到手机的文件管理里长按 → 分享 → 微信。'; }
+          note.textContent = '当前是 http 打开，浏览器不允许直接分享文件 —— 请先点「下载」，再到手机的文件管理里长按 → 分享 → 微信。';
+          note.style.color = 'var(--label-secondary)';
           return;
         }
         shareArtifact(artifactUrl, fileName, share, note);
       };
 
-      var actions = document.createElement('div');
-      actions.style.cssText = 'display:flex;align-items:center;flex:0 0 auto;';
-
-      item.appendChild(left);
-      actions.appendChild(dl);
       actions.appendChild(share);
+      actions.appendChild(dl);
       item.appendChild(actions);
       item.appendChild(note);
       box.appendChild(item);
@@ -1693,11 +2002,17 @@ window.onerror = function (message, source, line, column) {
   $('newTask').onclick = function () {
     currentTask = '';
     files = [];
+    clearStoredFiles();
+    clearSavedTask();
+    var fi = $('fileInput');
+    if (fi) { fi.value = ''; }
     renderFiles();
     setStatus('statusText', '');
     $('artifactList').innerHTML = '';
     $('customText').value = '';
-    try { localStorage.removeItem(taskKey); } catch (e) {}
+    show($('afterRow'), false);
+    show($('actionCard'), false);
+    dbg('已清空当前任务与文件缓存，页面已归位');
   };
 
   document.addEventListener('visibilitychange', function () {
@@ -1706,6 +2021,18 @@ window.onerror = function (message, source, line, column) {
   window.addEventListener('focus', function () {
     if (currentTask) { poll(); }
   });
+
+  var customDraftKey = 'pdf-helper-custom-draft';
+  var customTextEl = $('customText');
+  if (customTextEl) {
+    try {
+      var savedDraft = localStorage.getItem(customDraftKey);
+      if (savedDraft) { customTextEl.value = savedDraft; }
+    } catch (e) {}
+    customTextEl.addEventListener('input', function () {
+      try { localStorage.setItem(customDraftKey, customTextEl.value); } catch (e) {}
+    });
+  }
 
   $('sendCustom').onclick = function () {
     var text = $('customText').value.trim();
@@ -1778,15 +2105,41 @@ window.onerror = function (message, source, line, column) {
     }
   } catch (e) { dbg('✗ 绑定口令输入失败：' + String(e)); }
 
-  // ⑤ 恢复上一个任务
+  // ⑤ 恢复已选文件与上一任务数据（彻底解决页面刷新重置问题！）
+  // 5.1 从本地 IndexedDB 缓存恢复待处理文件（刷新后文件依然在，不需要重新去系统选文件）
+  loadStoredFiles().then(function (restored) {
+    if (restored && restored.length > 0 && files.length === 0) {
+      files = restored;
+      renderFiles();
+      dbg('已从本地缓存恢复已选文件（' + restored.length + ' 份：' + restored.map(function (f) { return f.name; }).join(' / ') + '）');
+    }
+  });
+
+  // 5.2 恢复上一个任务与产物展示
   try {
-    var lastTask = localStorage.getItem(taskKey);
-    if (lastTask) {
-      currentTask = lastTask;
-      setBusy(true);
-      setStatus('statusText', '正在恢复上一任务状态 ' + lastTask + ' …', 'warn');
-      dbg('恢复上一任务：' + lastTask);
-      startPolling();
+    var savedTask = getLastTask();
+    if (savedTask && savedTask.taskId) {
+      currentTask = savedTask.taskId;
+      dbg('恢复上一任务数据：' + currentTask + '（状态：' + savedTask.status + '）');
+
+      if (savedTask.status === 'ok' && savedTask.artifacts && savedTask.artifacts.length > 0) {
+        // 已完成任务：立刻恢复状态文本、渲染产物卡片、展开操作区！刷新绝不重置！
+        setStatus('statusText', savedTask.statusText || ('处理完成\n任务号：' + currentTask), 'ok');
+        renderArtifacts(savedTask.artifacts);
+        show($('actionCard'), true);
+        show($('afterRow'), true);
+        dbg('已自动恢复产物展示（' + savedTask.artifacts.length + ' 份文件）');
+      } else if (savedTask.status === 'error' || savedTask.status === 'timeout') {
+        setStatus('statusText', savedTask.statusText || ('任务状态：' + savedTask.status), 'err');
+        show($('actionCard'), true);
+        show($('afterRow'), true);
+      } else {
+        // 正在运行中：恢复轮询
+        setBusy(true);
+        setStatus('statusText', savedTask.statusText || ('正在恢复上一任务状态 ' + currentTask + ' …'), 'warn');
+        show($('actionCard'), true);
+        startPolling();
+      }
     }
   } catch (e) { dbg('✗ 恢复任务失败：' + String(e)); }
 })();
