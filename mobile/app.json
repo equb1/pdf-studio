@@ -20,49 +20,6 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
         "android.permission.WAKE_LOCK"
-      ],
-      "intentFilters": [
-        {
-          "action": "SEND",
-          "category": [
-            "DEFAULT"
-          ],
-          "data": [
-            {
-              "mimeType": "application/pdf"
-            },
-            {
-              "mimeType": "application/octet-stream"
-            }
-          ]
-        },
-        {
-          "action": "SEND_MULTIPLE",
-          "category": [
-            "DEFAULT"
-          ],
-          "data": [
-            {
-              "mimeType": "application/pdf"
-            }
-          ]
-        },
-        {
-          "action": "VIEW",
-          "category": [
-            "DEFAULT",
-            "BROWSABLE"
-          ],
-          "data": [
-            {
-              "scheme": "content"
-            },
-            {
-              "scheme": "file",
-              "mimeType": "application/pdf"
-            }
-          ]
-        }
       ]
     },
     "plugins": [
@@ -83,7 +40,8 @@
             "targetSdkVersion": 35
           }
         }
-      ]
+      ],
+      "expo-share-intent"
     ],
     "extra": {
       "eas": {
