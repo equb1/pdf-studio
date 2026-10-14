@@ -23,7 +23,6 @@
   },
   "include": [
     "src/**/*.ts",
-    "types/**/*.d.ts",
-    "scripts/phone-bridge/**/*.ts"
+    "types/**/*.d.ts"
   ]
 }
