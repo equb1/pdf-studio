@@ -89,6 +89,8 @@ export interface OutlineEntry {
   title: string
   /** 1 起的页码。 */
   page: number
+  /** 子书签（支持多层）；省略 children 即单层。 */
+  children?: readonly OutlineEntry[]
 }
 
 /** 页面引用 → 页码（1 起）。 */
@@ -130,7 +132,8 @@ export function listOutline(doc: PDFDocument): Array<OutlineEntry & { depth: num
 }
 
 /**
- * 生成/替换大纲：扁平一层，按给定顺序排列，每条指向 `page`（1 起）。
+ * 生成/替换大纲：按给定顺序排列，每条指向 `page`（1 起）；条目可带 `children` 形成多层
+ * （每层各自连 Prev/Next，父项用 /First /Last /Count 指向子层；/Count 记全部后代数）。
  *
  * 中文标题走 `PDFHexString.fromText`；`/Dest` 用 `[页面引用 /Fit]`。
  */
@@ -140,27 +143,43 @@ export function setOutline(doc: PDFDocument, entries: readonly OutlineEntry[]): 
   const pageRefs = doc.getPages().map(page => page.ref)
   const outlines = context.obj({ Type: 'Outlines' }) as PDFDict
   const outlinesRef = context.register(outlines)
-  const items = entries.map(entry => {
-    const pageRef = pageRefs[entry.page - 1]
-    if (pageRef === undefined) throw new Error(`书签「${entry.title}」指向第 ${entry.page} 页，但文档只有 ${pageRefs.length} 页`)
-    const dict = context.obj({
-      Title: PDFHexString.fromText(entry.title),
-      Parent: outlinesRef,
-      Dest: context.obj([pageRef, 'Fit']),
-    }) as PDFDict
-    return { ref: context.register(dict), dict }
-  })
-  for (const [index, item] of items.entries()) {
-    if (index > 0) item.dict.set(PDFName.of('Prev'), items[index - 1].ref)
-    if (index < items.length - 1) item.dict.set(PDFName.of('Next'), items[index + 1].ref)
+
+  // 递归构建：每一层各自连 Prev/Next，父项用 /First /Last /Count 指向子层
+  // （/Count 用"全部后代数量"——多数阅读器据此判断可展开 ✓）
+  const build = (list: readonly OutlineEntry[], parentRef: typeof outlinesRef): { first?: typeof outlinesRef; last?: typeof outlinesRef; count: number } => {
+    const items = list.map(entry => {
+      const pageRef = pageRefs[entry.page - 1]
+      if (pageRef === undefined) throw new Error(`书签「${entry.title}」指向第 ${entry.page} 页，但文档只有 ${pageRefs.length} 页`)
+      const dict = context.obj({
+        Title: PDFHexString.fromText(entry.title),
+        Parent: parentRef,
+        Dest: context.obj([pageRef, 'Fit']),
+      }) as PDFDict
+      const ref = context.register(dict)
+      const kids = Array.isArray(entry.children) && entry.children.length > 0 ? build(entry.children, ref) : undefined
+      if (kids !== undefined && kids.first !== undefined) {
+        dict.set(PDFName.of('First'), kids.first)
+        dict.set(PDFName.of('Last'), kids.last as never)
+        dict.set(PDFName.of('Count'), context.obj(kids.count))
+      }
+      return { ref, dict, kids }
+    })
+    for (const [index, item] of items.entries()) {
+      if (index > 0) item.dict.set(PDFName.of('Prev'), items[index - 1].ref)
+      if (index < items.length - 1) item.dict.set(PDFName.of('Next'), items[index + 1].ref)
+    }
+    const count = items.reduce((sum, item) => sum + 1 + (item.kids?.count ?? 0), 0)
+    return { first: items[0]?.ref, last: items[items.length - 1]?.ref, count }
   }
-  if (items.length > 0) {
-    outlines.set(PDFName.of('First'), items[0].ref)
-    outlines.set(PDFName.of('Last'), items[items.length - 1].ref)
-    outlines.set(PDFName.of('Count'), context.obj(entries.length))
+
+  const top = build(entries, outlinesRef)
+  if (top.first !== undefined) {
+    outlines.set(PDFName.of('First'), top.first)
+    outlines.set(PDFName.of('Last'), top.last as never)
+    outlines.set(PDFName.of('Count'), context.obj(top.count))
   }
   catalog.set(PDFName.of('Outlines'), outlinesRef)
-  return items.length
+  return top.count
 }
 
 /** 删除大纲（连 catalog 里的引用一起去掉）。 */

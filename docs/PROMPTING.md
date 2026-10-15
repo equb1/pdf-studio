@@ -418,7 +418,7 @@ pdf_metadata path="/tmp/定稿-属性.pdf" action="outline-set"
 pdf_metadata path="/tmp/定稿-书签.pdf" action="clear" output="/tmp/定稿-发布版.pdf"
 ```
 
-书签目前**只支持一层**（扁平）；`{page}` 是**真实页号**。
+书签支持**多层**（`outline` 的条目可带 `children`，最多 6 层；不写 children 就是扁平）；`{page}` 是**真实页号**。
 
 ### 模板 22 · 涂掉敏感信息（真删除，不是画黑框）
 

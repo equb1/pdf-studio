@@ -38,7 +38,7 @@
 | 二 | 统一页尺寸/缩放、N-up 拼版、小册子 | `pdf_layout`（`resize`/`nup`/`booklet`） | **已完成**（缩放不栅格化、注释错位/丢失都如实提示；测试 30 条） |
 | 二 | 文档属性读写与清除 | `pdf_metadata`（或并入 `pdf_inspect`） | **已完成**（属性含中文、书签一层、`clear` 连时间一起清；测试 26 条 + 文档就绪） |
 | 二 | 矩形密文（真删内容 + 打框） | `pdf_redact`（`preview`/`apply`） | **文本页已可用**：单段流 + **多段流**（跨流 CTM 累积）都通过；**图片/扫描页按纪律①不做图片修补**，会明确拒绝并给出替代路径；两道护栏（目标必须消失、框外行不得减少）保证绝不给假密文；测试 26 条 |
-| 三 | 书签/大纲增删改 | `pdf_outline` | 待做 |
+| 三 | 书签/大纲增删改 | `pdf_metadata`（`outline-list`/`outline-set`/`outline-clear`） | **已完成**（合并进 `pdf_metadata`；支持 `children` 多层，最多 6 层，`/Count` 记全部后代数）|
 | 三 | 两版 PDF 差异报告（文本 + 像素） | `pdf_compare` | **已完成**（并入 `pdf_optimize profile=compare`，不新增工具；测试 39 条含 compare） |
 | 三 | 体积优化（垃圾回收/线性化/清隐藏数据） | `pdf_optimize`（或并入 `pdf_compare`） | **已完成**（`gc`/`linearize`/`both` 走 qpdf 重写对象层，`compare` 见上一行；测试 39 条） |
 | 三 | 目录批量流水线 | **不做成工具**（批量是编排） | 已落地为 README/PROMPTING 的 agent 循环配方；每一步仍走确认门控 |
@@ -70,4 +70,4 @@
 
 | 能力 | 位置 | 状态 |
 |---|---|---|
-| 飞书指令 → `dsh --profile headless` 执行 → outbox 回传 | `scripts/phone-bridge/` + `docs/PHONE-BRIDGE.md` | **骨架已完成**（纯逻辑 51 条测试 + 不联网自检 6 项；`npm test` 26 套件 exit 0）。待办：真机联调（需用户提供 chat_id、续期 lark-cli 授权、允许试跑一次 headless）；可选 Tailscale HTTP 直下（需给插件端点加 token，当前是 loopback-only） |
+| 飞书指令 → `dsh --profile headless` 执行 → outbox 回传 | **已迁到独立仓库**（客户端与测试）+ `docs/PHONE-BRIDGE.md`（模式文档）| **骨架已完成**（纯逻辑 51 条测试 + 不联网自检 6 项；`npm test` 26 套件 exit 0）。待办：真机联调（需用户提供 chat_id、续期 lark-cli 授权、允许试跑一次 headless）；可选 Tailscale HTTP 直下（需给插件端点加 token，当前是 loopback-only） |

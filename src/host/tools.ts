@@ -2328,7 +2328,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       },
       outline: {
         type: 'array',
-        description: 'outline-set 用：[{ "title": "第一章", "page": 1 }, …]，按数组顺序排列（扁平一层）。',
+        description: 'outline-set 用：[{ "title": "第一章", "page": 1, "children": [{ "title": "1.1", "page": 2 }] }, …]；支持 children 多层（最多 6 层），按数组顺序排列。',
       },
       output: { type: 'string', description: '写操作输出路径，省略则生成 <名字>-meta.pdf。' },
     },
@@ -2368,9 +2368,9 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
           : action === 'clear'
             ? ['不修改源文件，结果写入新的 PDF', '清除标题/作者等属性与创建/修改时间（用于对外发布前去掉隐私信息）']
             : action.startsWith('outline')
-              ? ['不修改源文件，结果写入新的 PDF', '按数组顺序生成扁平书签（只支持一层）']
+              ? ['不修改源文件，结果写入新的 PDF', '按数组顺序生成书签（支持 children 多层，最多 6 层）']
               : ['不修改源文件，结果写入新的 PDF', '属性支持中文（写入时用 UTF-16 编码）'],
-        hints: ['对外发布前用 action=clear 去掉作者/标题等隐私信息', '书签只支持一层：要嵌套就分几次做（当前版本未实现嵌套）'],
+        hints: ['对外发布前用 action=clear 去掉作者/标题等隐私信息', '书签支持多层：条目带 children 即可（最多 6 层）'],
         ...confirmationArgs(options, args),
       })
       if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
@@ -2420,14 +2420,8 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         }
       }
       if (action === 'outline-set' && outlineRaw !== undefined) {
-        const entries = outlineRaw.map(item => {
-          const title = String(item.title ?? '').trim()
-          const page = Number(item.page)
-          if (title === '' || !Number.isFinite(page) || page < 1) {
-            throw new Error('outline 每一项都要有 title（非空）与 page（1 起的页码）')
-          }
-          return { title, page: Math.floor(page) }
-        })
+        // 支持 children 多层（递归规范化；深度上限 6）；原来的错误提示与页码校验都在里面保留 ✓
+        const entries = normalizeOutlineEntries(outlineRaw)
         const count = setOutline(doc, entries)
         await writeFile(output as string, await doc.save())
         return {
@@ -3353,5 +3347,22 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       },
       ...(definition.presentCall === undefined ? {} : { presentCall: definition.presentCall }),
     }
+  })
+}
+
+/** 把 outline 参数规范成可递归的条目树（支持 children 多层；深度上限 6）。 */
+const normalizeOutlineEntries = (raw: unknown, depth = 0): OutlineEntry[] => {
+  if (!Array.isArray(raw)) return []
+  if (depth > 5) throw new Error('书签层级过深：最多 6 层')
+  return raw.map(item => {
+    const rec = (item ?? {}) as { title?: unknown; page?: unknown; children?: unknown }
+    const title = typeof rec.title === 'string' ? rec.title.trim() : ''
+    const page = Number(rec.page)
+    if (title === '' || !Number.isFinite(page) || page < 1) {
+      throw new Error('outline 每一项都要有 title（非空）与 page（1 起的页码）：' + JSON.stringify(item))
+    }
+    const children = normalizeOutlineEntries(rec.children, depth + 1)
+    const base = { title, page: Math.floor(page) }
+    return children.length > 0 ? { ...base, children } : base
   })
 }

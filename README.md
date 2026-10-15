@@ -8,7 +8,7 @@
 | 工具 schema | ≈ 23KB ≈ 5.6k tokens（每轮对话带给模型的体积） |
 | 构建产物 | `lib/index.js` ≈ 465KB（esbuild 单文件） |
 | 真机验收 | 每个功能都有像素/结构级证据：QuickLook 独立渲染、`qpdf --check`、文字层前后对照等 |
-| 手机远控（可选） | `scripts/phone-bridge`：飞书发指令 → `dsh --profile headless` 执行 → 产物回传（81 + 65 + 26 + 20 + 19 条测试 + 入口 20 条 + 不联网自检） |
+| 手机远控（可选） | **已迁到独立仓库**（飞书 / 手机网页 / Android App 派活 → `dsh --profile headless` → 产物回传）；模式与安全边界见 [`docs/PHONE-BRIDGE.md`](docs/PHONE-BRIDGE.md) |
 
 三条纪律（全程遵守）：
 
@@ -384,7 +384,7 @@ dsh plugin --profile web add link:$PWD
 | `set` | `values={title, author, …}` 写属性，**支持中文**（UTF-16 编码，`PDFHexString.fromText`） |
 | `clear` | 清空 6 个属性 + 删除创建/修改时间（**对外发布前去隐私**） |
 | `outline-list` | 列出书签（含目标页，嵌套按深度缩进，**只读**） |
-| `outline-set` | `outline=[{title, page}]` 生成书签（**当前只支持一层**） |
+| `outline-set` | `outline=[{title, page, children?}]` 生成书签（**支持 children 多层，最多 6 层**；省略 children 即扁平） |
 | `outline-clear` | 删除书签（去掉 `/Outlines`） |
 
 要点：`/Dest` 写的是 `[页面引用 /Fit]`——写页码数字多数阅读器不跳转；中文标题必须用 hex 字符串，
@@ -1471,38 +1471,16 @@ right/bottom 锚定切换为 auto                              ✓
 
 ## 手机远控（可选）
 
-让**手机在任意网络**发一条飞书消息，主机上的 DSH 就把它当一次 PDF 任务执行，并把产物回传到你手机：
+**已迁到独立仓库**：客户端（手机网页 + Android App + 宿主侧桥接器）与它的 6 套测试在
+`shijuan-gongfang` 仓库（cnb.cool：`pdf-studio-mobile`）；本仓库只保留**通用 PDF 能力**与这套**模式文档**。
 
-```
-手机（任意网络）──①飞书消息──▶ 飞书服务器 ──②主机轮询──▶ scripts/phone-bridge
-   ▲                                                        │③dsh --profile headless "<任务>"
-   └──④文本回执 + 产物文件── lark-cli ◀── outbox/<taskId>/ ──┘
-```
+- 模式与安全边界（fail-closed 白名单 / `message_id` 去重 / 单飞队列 + 背压 / 限流与每日配额 / 多 token /
+  产物签名直下链接 / 产物扩展名与大小白名单 / 不开 shell）：见 [`docs/PHONE-BRIDGE.md`](docs/PHONE-BRIDGE.md)
+- 示例配置（**不含任何秘密**）：[`docs/examples/phone-bridge.config.example.json`](docs/examples/phone-bridge.config.example.json)
+- 插件侧手机直下端点在**本仓库**（默认关闭）：`GET /api/pdf-studio/download?path=&token=`
+  —— 凭据是 token（定时安全比较）、可读范围硬限制在 `downloadRoot`；细节见「执行前确认」与 `src/host/routes.ts`。
 
-- **为什么可行**：双方都**主动出网**，所以主机在 NAT 后面、手机在蜂窝网络、相隔多远都不需要公网 IP 或开端口。
-- **只执行 PDF 策略**：提示词里硬约束"只能用 `pdf_*` 工具、不得执行 shell、不得改源文件、产物只能写 outbox"。
-- **手机发文件也能改**：先把文件发给机器人（会下载并记住），再发一条 `/pdf` 指令即可，产物照常回传。
-- **无人值守友好**：队列上限（默认 3，满了明确回执「先没收」）+ outbox 自动清理（默认保留 14 天，只清自己建的目录）。
-- **fail-closed 安全**：白名单缺失直接起不来；只认文本 + 前缀（默认 `/pdf`）；旧消息不补跑；消息内容只当 argv 元素（不拼 shell）；回传文件走扩展名/大小白名单；单飞队列；按 `message_id` 去重。
-- **零新增依赖**：只用 `node:child_process` 调 `lark-cli` 与 `dsh`。
-- **两种来源**：默认轮询（`source: poll`）；也可用长连接事件（`source: event`，更即时，需飞书侧配事件订阅）。
-- **上线自检**：`npm run phone-bridge:preflight -- --config <配置>` 逐项检查并给修复命令（发送项走 dry-run，不真发消息）。
-- **可选直下**：插件配 `downloadToken`（≥16 位）+ `downloadRoot` 后，多一个
-  `GET /api/pdf-studio/download?path=…&token=…`；手机在 Tailscale/内网里可直接下产物（不受飞书文件限制）。
-  这条路由**默认关闭**、越界 403、单文件默认上限 64MB；桥接器配 `downloadBaseUrl` 后会把链接自动附在回执里。
-
-完整部署步骤（飞书侧准备、配置说明、launchd 常驻、故障排查、Tailscale 加速）见
-[`docs/PHONE-BRIDGE.md`](docs/PHONE-BRIDGE.md)；自检与测试：
-
-```sh
-npm run phone-bridge:selftest   # 不联网：假消息 + 假 dsh 跑完整流水线
-npm run test:phone-bridge       # 84 条纯逻辑断言
-npm run test:phone-bridge-io    # 65 条接线断言（含"消息内容绝不进 shell"的安全回归）
-npm run test:download-route     # 20 条下载端点断言（默认关闭 / token / 越界 / 大小上限 / 非 loopback 可达）
-npm run test:phone-bridge-event # 26 条事件模式断言（stdin 契约 / ready 门控 / 三种负载形状）
-npm run test:phone-bridge-preflight # 19 条上线自检断言（身份感知 / 发送项 dry-run / 修复提示）
-npm run test:phone-bridge-main  # 11 条入口端到端断言（真跑 main()：事件/轮询/回传/记账/去重）
-```
+手机远控的**实现与测试不在本仓库**，所以这里不再重复它的命令与阈值（避免文档漂移）。
 
 ## 范围与后续
 
@@ -1533,6 +1511,6 @@ npm run test:phone-bridge-main  # 11 条入口端到端断言（真跑 main()：
 
 **可选后续**（都不是当前能力的短板，按需再做）：
 
-1. 书签**嵌套**（现在只支持一层扁平）；
+1. ~~书签嵌套~~ —— **已完成**（`children` 多层，最多 6 层；`/Count` 记全部后代数）✓；
 2. 把"目录批量"做成独立工具（会突破 21 个工具的封顶，需先放宽纪律②）；
 3. `pdf_redact` 覆盖图片页（需要引入图像处理，同样与纪律①冲突）。
