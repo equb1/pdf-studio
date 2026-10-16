@@ -26,6 +26,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -77,7 +78,9 @@ function loadCreateCanvas(): CreateCanvas {
  *   2. 环境变量 `DSH_PDF_STUDIO_TESSDATA`；
  *   3. 这个兜底路径。
  */
-export const DEFAULT_LANG_PATH = '/Users/Zhuanz/dsh-pdf-maker/assets/tessdata'
+// 兜底语言数据目录：随【插件自身安装位置】解析，而不是写死某个人的家目录 ✓
+// 优先级仍是 配置 tessdataPath > 环境变量 DSH_PDF_STUDIO_TESSDATA > 这个兜底 ✓
+export const DEFAULT_LANG_PATH = fileURLToPath(new URL('../../assets/tessdata', import.meta.url))
 
 /** 解析实际要用的语言数据目录（显式 > 环境变量 > 兜底）。 */
 export function resolveLangPath(explicit?: string): string {

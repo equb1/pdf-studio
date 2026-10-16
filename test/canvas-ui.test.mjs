@@ -16,11 +16,12 @@
  */
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
 import { JSDOM } from 'jsdom'
 import { readEditableDocument } from '../src/host/engine.ts'
 
-const SOURCE = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
+const SOURCE = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
 /** Rendered page width in CSS px, chosen by the harness so the maths is exact. */
 const IMG_WIDTH = 595
 const PAGE_WIDTH = 595.28

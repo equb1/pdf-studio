@@ -18,13 +18,20 @@
  */
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { buildToolDefinitions } from '../src/host/tools.ts'
 
-const CONTRACT = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
-const SCAN = '/Users/Zhuanz/dsh-pdf-maker/demo/source/ceshi.pdf'
+// 夹具缺失时优雅跳过（新克隆若没带 test/fixtures/ 也不会崩 ✗）
+if (!existsSync(fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url)))) {
+  console.log('  （缺少 test/fixtures/contract.pdf → 跳过本套测试 ✓）')
+  process.exit(0)
+}
+
+const CONTRACT = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
+const SCAN = fileURLToPath(new URL('./fixtures/ceshi.pdf', import.meta.url))
 const OUT_DIR = '/tmp/pdf-studio-tools'
 
 let failed = 0

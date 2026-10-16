@@ -9,6 +9,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
 import { makePdfRoutes, isLoopback, PDF_API_PREFIX } from '../src/host/routes.ts'
 
@@ -339,7 +340,7 @@ await test('list honours the depth bound', async () => {
 // arrived. These cases drive each handler to a 200 with real bytes — the only
 // thing that catches a missing binding.
 
-const FIXTURE = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
+const FIXTURE = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
 
 /** Drive a route handler and collect its response. */
 async function callRoute(path, options = {}) {

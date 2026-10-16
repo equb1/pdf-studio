@@ -61,3 +61,10 @@ phone-bridge-state.json
 phone-bridge.log
 pb.config.json
 phone-bridge.config.json
+
+# tesseract 语言数据（体积大，随环境提供；本机可用软链 ✓）
+assets/
+
+# 例外：两份真实样本夹具需要进仓库（其余 *.pdf/*.png 仍是生成缓存 ✓）
+!test/fixtures/contract.pdf
+!test/fixtures/ceshi.pdf

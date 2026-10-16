@@ -10,6 +10,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { readFile } from 'node:fs/promises'
 import {
@@ -136,7 +137,7 @@ console.log('content-stream parser\n')
 
 // ── the real document ───────────────────────────────────────────────────────
 
-const source = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
+const source = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
 const doc = await PDFDocument.load(await readFile(source))
 const page = doc.getPages()[0]
 const contents = page.node.Contents()

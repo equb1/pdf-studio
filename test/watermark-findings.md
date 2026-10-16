@@ -23,7 +23,7 @@ downloads, deterministic).
 > **`test/fixtures/make-fixtures.mjs` is a source, not a cache.** `test/fixtures/*.pdf` and `*.png`
 > are gitignored and safe to delete, but `git clean -fx test/fixtures` also removes the untracked
 > script. It has been restored from
-> `/Users/Zhuanz/Desktop/deaktop-tool/tmp_clean/make-fixtures.mjs.bak` more than once. Keep it
+> `<仓库外的旧脚本>` more than once. Keep it
 > tracked, or restore with
 > `cp tmp_clean/make-fixtures.mjs.bak pdf-studio/test/fixtures/make-fixtures.mjs`.
 

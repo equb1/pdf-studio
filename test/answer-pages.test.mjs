@@ -19,6 +19,19 @@ import { buildToolDefinitions } from '../src/host/tools.ts'
 import { inspectLanguageData } from '../src/core/ocr.ts'
 import { groupAnswerRanges, scoreAnswerPage, suggestArrangement } from '../src/core/answer-pages.ts'
 
+// OCR 语言数据缺失时优雅跳过（别人 clone 后没有 tessdata 也不会崩 ✗）
+{
+  const { existsSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const langDir = process.env.DSH_PDF_STUDIO_TESSDATA
+    ?? fileURLToPath(new URL('../assets/tessdata', import.meta.url))
+  if (!existsSync(langDir)) {
+    console.log('  （缺少 tesseract 语言数据 ' + langDir + ' → 跳过本套测试 ✓）')
+    process.exit(0)
+  }
+}
+
+
 let failed = 0
 let skipped = 0
 const check = (name, ok, detail) => {
