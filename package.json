@@ -9,6 +9,7 @@
     "public",
     "scripts",
     "test",
+    "LICENSE",
     "README.md",
     "cordis.patch.yml"
   ],
@@ -79,5 +80,26 @@
     "jsdom": "^29.1.1",
     "qpdf-wasm": "^0.1.0",
     "typescript": "^7.0.2"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/equb1/pdf-studio.git"
+  },
+  "homepage": "https://github.com/equb1/pdf-studio#readme",
+  "bugs": {
+    "url": "https://github.com/equb1/pdf-studio/issues"
+  },
+  "author": "equb1",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "pdf",
+    "pdf-lib",
+    "pdf-editing",
+    "ocr",
+    "tesseract",
+    "watermark",
+    "redact",
+    "chinese"
+  ]
 }

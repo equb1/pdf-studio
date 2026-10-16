@@ -12,6 +12,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
@@ -25,7 +26,7 @@ import { parseOperations, showStrings, tokenize } from '../src/core/content-stre
 const require = createRequire(import.meta.url)
 const { PDFDocument, PDFArray, PDFName, PDFRawStream, decodePDFRawStream } = require('pdf-lib')
 
-const SOURCE = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
+const SOURCE = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
 const OUT = '/tmp/pdf-studio-text-edit.pdf'
 
 let failed = 0

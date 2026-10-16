@@ -11,6 +11,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { readFile } from 'node:fs/promises'
 import { listReadableRuns, readPageContentStreams } from '../src/core/text-editor.ts'
@@ -20,7 +21,7 @@ import { makeDecoder, parseToUnicodeCMap, decodeGlyphOperand } from '../src/core
 const require = createRequire(import.meta.url)
 const { PDFDocument } = require('pdf-lib')
 
-const SOURCE = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
+const SOURCE = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
 
 let failed = 0
 const check = (name, ok, detail) => {

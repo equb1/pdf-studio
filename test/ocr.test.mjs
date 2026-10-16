@@ -27,10 +27,29 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+// OCR 语言数据缺失时优雅跳过（别人 clone 后没有 tessdata 也不会崩 ✗）
+{
+  const { existsSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const langDir = process.env.DSH_PDF_STUDIO_TESSDATA
+    ?? fileURLToPath(new URL('../assets/tessdata', import.meta.url))
+  if (!existsSync(langDir)) {
+    console.log('  （缺少 tesseract 语言数据 ' + langDir + ' → 跳过本套测试 ✓）')
+    process.exit(0)
+  }
+}
+
+
 const require = createRequire(import.meta.url)
 
-const PDF_PATH = '/Users/Zhuanz/dsh-pdf-maker/demo/source/ceshi.pdf'
-const LANG_PATH = '/Users/Zhuanz/dsh-pdf-maker/assets/tessdata'
+const PDF_PATH = fileURLToPath(new URL('./fixtures/ceshi.pdf', import.meta.url))
+// 语言数据目录：优先环境变量，其次插件目录旁的 assets/tessdata（不再写死家目录 ✓）
+const LANG_PATH = process.env.DSH_PDF_STUDIO_TESSDATA
+  ?? fileURLToPath(new URL('../assets/tessdata', import.meta.url))
+if (!existsSync(LANG_PATH)) {
+  console.log('  （没有 tesseract 语言数据 ' + LANG_PATH + ' → 跳过 OCR 测试 ✓）')
+  process.exit(0)
+}
 const SCALE = 2
 const TESS_PKG = require.resolve('tesseract.js/package.json')
 const WORKER_PATH = join(dirname(TESS_PKG), 'src', 'worker-script', 'node', 'index.js')

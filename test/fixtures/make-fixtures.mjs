@@ -10,7 +10,7 @@
  * Only `test/fixtures/*.pdf` and `*.png` are caches (gitignored, rebuilt on
  * demand). This script itself has been removed repeatedly by
  * `git clean -fx test/fixtures`; it must be tracked. 仓库外备份：
- * /Users/Zhuanz/Desktop/deaktop-tool/tmp_clean/make-fixtures.mjs.bak
+ * <仓库外的旧脚本>
  * （恢复：cp tmp_clean/make-fixtures.mjs.bak pdf-studio/test/fixtures/make-fixtures.mjs）
  *
  * The set deliberately covers the page-tree shapes the watermark writer has to

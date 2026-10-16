@@ -17,6 +17,8 @@
  */
 
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import {
@@ -26,7 +28,13 @@ import {
   inspectEncryption,
 } from '../src/core/qpdf.ts'
 
-const SOURCE = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
+// 夹具缺失时优雅跳过（新克隆若没带 test/fixtures/ 也不会崩 ✗）
+if (!existsSync(fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url)))) {
+  console.log('  （缺少 test/fixtures/contract.pdf → 跳过本套测试 ✓）')
+  process.exit(0)
+}
+
+const SOURCE = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
 const OUT_ENC = '/tmp/pdf-studio-protected.pdf'
 const OUT_DEC = '/tmp/pdf-studio-unprotected.pdf'
 

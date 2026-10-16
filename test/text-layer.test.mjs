@@ -9,6 +9,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 
 import { extractPageContent, extractTextLayer } from '../src/core/text-layer.ts'
@@ -16,8 +17,8 @@ import { openPdf } from '../src/core/pdf.ts'
 
 const require = createRequire(import.meta.url)
 
-const CONTRACT = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
-const CESHI = '/Users/Zhuanz/dsh-pdf-maker/demo/source/ceshi.pdf'
+const CONTRACT = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
+const CESHI = fileURLToPath(new URL('./fixtures/ceshi.pdf', import.meta.url))
 
 const fmtRect = r =>
   `x=${r.x.toFixed(2)} y=${r.y.toFixed(2)} w=${r.width.toFixed(2)} h=${r.height.toFixed(2)}`

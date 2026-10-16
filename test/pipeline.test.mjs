@@ -16,14 +16,28 @@
  */
 
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { existsSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { analyzeDocument, exportSearchable } from '../src/host/engine.ts'
 import { openPdf } from '../src/core/pdf.ts'
 
-const SCAN = '/Users/Zhuanz/dsh-pdf-maker/demo/source/ceshi.pdf'
-const TEXT = '/Users/Zhuanz/dsh-pdf-maker/demo/source/contract.pdf'
+// 本套件含"扫描页 OCR"部分：没有 tesseract 语言数据就优雅跳过（别人 clone 不会崩 ✗）
+{
+  const { existsSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const langDir = process.env.DSH_PDF_STUDIO_TESSDATA
+    ?? fileURLToPath(new URL('../assets/tessdata', import.meta.url))
+  if (!existsSync(langDir)) {
+    console.log('  （缺少 tesseract 语言数据 ' + langDir + ' → 跳过本套测试 ✓）')
+    process.exit(0)
+  }
+}
+
+
+const SCAN = fileURLToPath(new URL('./fixtures/ceshi.pdf', import.meta.url))
+const TEXT = fileURLToPath(new URL('./fixtures/contract.pdf', import.meta.url))
 const OUT = '/tmp/pdf-studio-pipeline-searchable.pdf'
 
 let failed = 0

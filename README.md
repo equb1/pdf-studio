@@ -26,10 +26,10 @@
 
 ```sh
 # 1) 装进 profile（web / desktop 均可）
-dsh plugin add /Users/Zhuanz/Desktop/deaktop-tool/pdf-studio
+dsh plugin add <你克隆到的目录>/pdf-studio
 
 # 2) 改了 src/** 之后：先构建，再重启 DSH（apply() 只在启动时跑一次）
-cd /Users/Zhuanz/Desktop/deaktop-tool/pdf-studio && npm run build
+cd <你克隆到的目录>/pdf-studio && npm run build
 ```
 
 装好后**直接用自然语言说需求**，不需要记工具名与参数：

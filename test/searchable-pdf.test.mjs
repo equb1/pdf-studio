@@ -30,7 +30,7 @@ import { buildSearchablePdf, pickOverlayFont } from '../src/core/searchable-pdf.
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO = path.resolve(HERE, '..')
 
-const SOURCE = '/Users/Zhuanz/dsh-pdf-maker/demo/source/ceshi.pdf'
+const SOURCE = fileURLToPath(new URL('./fixtures/ceshi.pdf', import.meta.url))
 const OUTPUT = '/tmp/pdf-studio-searchable-test.pdf'
 const OUTPUT_COVER = '/tmp/pdf-studio-searchable-cover-test.pdf'
 const STANDARD_FONTS = path.join(REPO, 'node_modules/pdfjs-dist/standard_fonts/')
