@@ -69,5 +69,5 @@
 ## 自己搭一套要看的东西
 
 1. 示例配置：`docs/examples/phone-bridge.config.example.json` ✓（里面**没有任何秘密** ✓）
-2. 完整文档与实现：**`pdf-studio-mobile` 仓库** ✓（`docs/PHONE-BRIDGE.md` ✓ 桥接器 ✓ 网页 ✓ App ✓ 6 套测试 ✓）
+2. 完整实现：**属于下游集成、不在本仓库** ✓（桥接器 ✓ 手机网页 ✓ Android App ✓ 及其测试 ✓）
 3. 插件侧前置：给 headless profile 装上本插件 ✓（`dsh.profile.bundles` + `link:` 依赖 + `dsh plugin --profile headless install` ✓ —— `--patch` 只叠配置、**不带依赖** ✗）
