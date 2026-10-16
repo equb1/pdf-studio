@@ -1472,7 +1472,7 @@ right/bottom 锚定切换为 auto                              ✓
 ## 手机远控（可选）
 
 **已迁到独立仓库**：客户端（手机网页 + Android App + 宿主侧桥接器）与它的 6 套测试在
-`shijuan-gongfang` 仓库（cnb.cool：`pdf-studio-mobile`）；本仓库只保留**通用 PDF 能力**与这套**模式文档**。
+一个**独立的下游集成仓库**（不在本仓库、也不随本仓库发布）；本仓库只保留**通用 PDF 能力**与这套**模式文档**。
 
 - 模式与安全边界（fail-closed 白名单 / `message_id` 去重 / 单飞队列 + 背压 / 限流与每日配额 / 多 token /
   产物签名直下链接 / 产物扩展名与大小白名单 / 不开 shell）：见 [`docs/PHONE-BRIDGE.md`](docs/PHONE-BRIDGE.md)
