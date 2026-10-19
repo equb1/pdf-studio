@@ -83,11 +83,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/equb1/pdf-studio.git"
+    "url": "git+https://github.com/equb1/dsh-pdf-studio.git"
   },
-  "homepage": "https://github.com/equb1/pdf-studio#readme",
+  "homepage": "https://github.com/equb1/dsh-pdf-studio#readme",
   "bugs": {
-    "url": "https://github.com/equb1/pdf-studio/issues"
+    "url": "https://github.com/equb1/dsh-pdf-studio/issues"
   },
   "author": "equb1",
   "keywords": [
