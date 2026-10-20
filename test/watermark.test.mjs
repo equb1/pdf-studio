@@ -1788,6 +1788,18 @@ if (fixedDefects.size > 0) {
 
 console.log(`\nartifacts: ${join(OUT_DIR, 'watermarked.pdf')} , ${join(OUT_DIR, 'cleaned.pdf')}`)
 
+
+// ── pages 支持区间字符串（与数组等价）──────────────────────────
+{
+  const one = await addWatermark(sameSize, { text: 'RANGE', placement: 'center', pages: '1' })
+  check('pages 传区间字符串 "1" 等价于 [1]', one.result.pages === 1, String(one.result.pages))
+  const two = await addWatermark(sameSize, { text: 'RANGE', placement: 'center', pages: '1-2' })
+  check('pages 传区间字符串 "1-2" 给两页盖章', two.result.pages === 2, String(two.result.pages))
+  const even = await addWatermark(sameSize, { text: 'RANGE', placement: 'center', pages: 'odd' })
+  check('pages 传 "odd" 也能解析（按真实页数）', even.result.pages >= 1, String(even.result.pages))
+}
+
+
 if (failed > 0) {
   console.log('\nRESULT: 有回归断言失败。')
   process.exitCode = 1

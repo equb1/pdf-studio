@@ -611,6 +611,24 @@ export async function addWatermark(
   // inflating that would push the picture off its own centre.
   if (spec.image === undefined) markHeight = Math.max(markHeight, fontSize * 1.15)
 
+  // 图片水印超过页面可见宽度时**等比缩到页宽以内**：否则会被页面的 BBox 裁掉一大半，
+  // 或者伸出页面（在 Acrobat 里看着像"水印跑出纸外"）。文字水印按字号绘制，不需要这一步。
+  if (spec.image !== undefined && markWidth > 0) {
+    const widths = doc.getPages().map(page => page.getWidth()).filter(width => width > 0)
+    const widest = widths.length > 0 ? Math.max(...widths) : 0
+    const cap = widest > 0 ? Math.max(72, widest - margin * 2) : 0
+    if (cap > 0 && markWidth > cap) {
+      const scale = cap / markWidth
+      const scaledWidth = markWidth * scale
+      const scaledHeight = markHeight * scale
+      markOps.length = 0
+      markOps.push('q', `${n(scaledWidth)} 0 0 ${n(scaledHeight)} 0 0 cm`, `/${IMAGE_RESOURCE_NAME} Do`, 'Q')
+      markWidth = scaledWidth
+      markHeight = scaledHeight
+      notes.push(`图片水印比页面宽（${Math.round(markWidth / scale)}pt → ${Math.round(scaledWidth)}pt），已等比缩放到页面宽度以内`)
+    }
+  }
+
   const markStream = PDFRawStream.of(
     doc.context.obj({
       Type: 'XObject',
