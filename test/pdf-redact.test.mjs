@@ -20,10 +20,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { buildToolDefinitions } from '../src/host/tools.ts'
-import { openPdf, pageSize } from '../src/core/pdf.ts'
+import { openPdf, openPdfBytes, pageSize } from '../src/core/pdf.ts'
 import { extractTextLayer } from '../src/core/text-layer.ts'
 import { runQpdf } from '../src/core/qpdf.ts'
 import { readPageContentStreams } from '../src/core/text-editor.ts'
+import { detachedSafeCopy, paintRects, redactPages } from '../src/core/redact.ts'
 
 let failed = 0
 const check = (name, ok, detail) => {
@@ -228,5 +229,44 @@ rmSync(WORK, { recursive: true, force: true })
     result.report.removedPaths === 0, String(result.report.removedPaths))
 }
 
-console.log(`\n${failed === 0 ? 'ALL PDF-REDACT CHECKS PASSED（单段流 + 多段流文本页；图片/扫描页按纪律不做）' : `${failed} check(s) FAILED`}`)
+
+// ── action=patch（原位涂色）：只盖不改 ──────────────────────────
+{
+  const dir = mkdtempSync(join(tmpdir(), 'pdf-patch-'))
+  const src = join(dir, 'src.pdf')
+  {
+    const doc = await PDFDocument.create()
+    const font = await doc.embedFont(StandardFonts.Helvetica)
+    const page = doc.addPage([400, 600])
+    page.drawText('HEADER-TO-COVER', { x: 40, y: 560, size: 18, font })
+    page.drawText('BODY KEEP ME', { x: 40, y: 300, size: 18, font })
+    await writeFile(src, await doc.save())
+  }
+  const before = await readFile(src)
+  const beforeDoc = await openPdfBytes(detachedSafeCopy(new Uint8Array(before)))
+  const beforeLines = (await extractTextLayer(beforeDoc, 1)).map(l => l.text.trim())
+
+  const painted = await paintRects(new Uint8Array(before), [{ page: 1, x: 30, y: 545, width: 220, height: 40 }], { r: 255, g: 255, b: 255 })
+  check('patch：产出了新字节（不是原样返回）', sha(painted.bytes) !== sha(before))
+  check('patch：画了 1 处', painted.painted === 1, String(painted.painted))
+
+  const afterDoc = await openPdfBytes(detachedSafeCopy(painted.bytes))
+  const afterLines = (await extractTextLayer(afterDoc, 1)).map(l => l.text.trim())
+  check('patch：**文字层完全不变**（这是"只盖不删"的核心保证）',
+    beforeLines.length === afterLines.length && beforeLines.every((x, i) => x === afterLines[i]),
+    afterLines.join(' | ').slice(0, 80))
+  check('patch：页数不变', afterDoc.numPages === beforeDoc.numPages, String(afterDoc.numPages))
+
+  let badPage = ''
+  try { await paintRects(new Uint8Array(before), [{ page: 9, x: 0, y: 0, width: 10, height: 10 }], { r: 0, g: 0, b: 0 }) } catch (e) { badPage = String(e?.message ?? e) }
+  check('patch：越界页号给中文报错', badPage.includes('但文档只有'), badPage.slice(0, 60))
+
+  let empty = ''
+  try { await paintRects(new Uint8Array(before), [], { r: 0, g: 0, b: 0 }) } catch (e) { empty = String(e?.message ?? e) }
+  check('patch：空 rects 报错而不是静默成功', empty.includes('至少一个矩形'), empty.slice(0, 40))
+
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log(`\n${failed === 0 ? 'ALL PDF-REDACT CHECKS PASSED（单段流 + 多段流文本页 + patch 原位涂色；图片/扫描页按纪律不做）' : `${failed} check(s) FAILED`}`)
 if (failed > 0) process.exitCode = 1

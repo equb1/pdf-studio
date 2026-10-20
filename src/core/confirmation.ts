@@ -214,6 +214,8 @@ export function classifyGate(input: GateInput): GateDecision {
   if (input.tool === 'pdf_layout') mark(`${titleFor(input.tool, input.action)}会改写页面几何/结构`)
   // 写属性/清除属性、改书签都会改写文件（只读的 get / outline-list 走 proceed）。
   if (input.tool === 'pdf_redact' && input.action === 'apply') mark('真删除内容不可逆')
+  // patch 只在框内重绘背景色（不动文字），但同样写盘，必须拦。
+  if (input.tool === 'pdf_redact' && input.action === 'patch') mark('原位涂色会改写页面内容流')
   // 优化会重写整个文件的字节结构（内容不变，但文件确实被改写了）。
   // compare 是只读比对（不写盘），不该被当成写操作拦下来。
   if (input.tool === 'pdf_optimize' && input.action !== 'compare') mark('重写对象层会生成新文件')
@@ -308,7 +310,11 @@ function titleFor(tool: string, action: string): string {
     if (action === 'compare') return '比对两版差异'
     return action === 'linearize' ? '线性化' : action === 'both' ? '垃圾回收 + 线性化' : '垃圾回收'
   }
-  if (tool === 'pdf_redact') return action === 'apply' ? '矩形密文（真删除）' : '密文空跑检查'
+  if (tool === 'pdf_redact') {
+    if (action === 'apply') return '矩形密文（真删除）'
+    if (action === 'patch') return '矩形涂色（原位覆盖）'
+    return '密文空跑检查'
+  }
   if (tool === 'pdf_metadata') {
     if (action === 'get') return '读取文档信息'
     if (action === 'set') return '写入文档信息'

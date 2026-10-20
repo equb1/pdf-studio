@@ -415,3 +415,38 @@ export function detachedSafeCopy(bytes: Uint8Array): Uint8Array {
   copy.set(bytes)
   return copy
 }
+
+/**
+ * 在指定矩形内**重绘背景色**（原位覆盖：只追加绘制，不动文字、不栅格化整页）。
+ *
+ * 与 {@link redactPages} 的区别：redact 是"真删内容"，本函数是"盖住"——
+ * 文字层保持可提取、图片像素不被修改，但视觉上被色块覆盖。
+ * 适用场景：页眉/水印/署名与正文同处一张**页面图片**里（redact 按纪律①不能动图片像素）。
+ *
+ * 注意：输出**不带加密**（与其它写盘路径一致）；输入若带 `/Encrypt` 会抛错，请先 `pdf_protect action=decrypt`。
+ */
+export async function paintRects(
+  bytes: Uint8Array,
+  boxes: readonly RedactBox[],
+  color: { r: number; g: number; b: number },
+): Promise<{ bytes: Uint8Array; painted: number }> {
+  if (boxes.length === 0) throw new Error('需要至少一个矩形')
+  const doc = await PDFDocument.load(bytes)
+  const pages = doc.getPages()
+  let painted = 0
+  for (const box of boxes) {
+    const page = pages[box.page - 1]
+    if (page === undefined) throw new Error(`涂色框指定了第 ${box.page} 页，但文档只有 ${pages.length} 页`)
+    page.drawRectangle({
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      color: rgb(color.r / 255, color.g / 255, color.b / 255),
+      borderWidth: 0,
+      opacity: 1,
+    })
+    painted += 1
+  }
+  return { bytes: new Uint8Array(await doc.save()), painted }
+}

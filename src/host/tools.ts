@@ -69,7 +69,7 @@ import { loadFontkitAdapter, resolveFontForText } from '../core/fonts.ts'
 import { bookletSheets, countAnnotsPerPage, nupPages, parseTargetSize, resizePages } from '../core/layout.ts'
 import { applyMetadata, clearMetadata, clearOutline, listOutline, METADATA_FIELDS, readMetadata, setOutline, type MetadataField } from '../core/docinfo.ts'
 import type { OutlineEntry } from '../core/docinfo.ts'
-import { redactPages, type RedactBox } from '../core/redact.ts'
+import { redactPages, type RedactBox, paintRects } from '../core/redact.ts'
 import { describeSaving, optimizePdf, type OptimizeProfile } from '../core/optimize.ts'
 import { comparePdfs, renderCompareReport } from '../core/compare.ts'
 import { runQpdf } from '../core/qpdf.ts'
@@ -2467,13 +2467,13 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
     presentCall: args => ({
       card: 'generic',
       title: `密文涂黑 ${basename(String(args.path ?? ''))}`,
-      kind: String(args.action ?? 'preview') === 'apply' ? 'write' : 'read',
+      kind: ['apply', 'patch'].includes(String(args.action ?? 'preview')) ? 'write' : 'read',
     }),
     async execute(args) {
       const source = resolveInput(args)
       const action = (optionalString(args, 'action') ?? 'preview').toLowerCase()
-      if (action !== 'preview' && action !== 'apply') {
-        throw new Error(`未知 action：${action}；支持 preview / apply`)
+      if (action !== 'preview' && action !== 'apply' && action !== 'patch') {
+        throw new Error(`未知 action：${action}；支持 preview / apply / patch`)
       }
       const rawRects = Array.isArray(args.rects) ? args.rects as Array<Record<string, unknown>> : []
       if (rawRects.length === 0) {
@@ -2511,6 +2511,22 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       })
       if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
       if (gate.kind === 'refused') throw new Error(gate.message)
+
+      // ── action=patch：原位重绘背景色（盖住页眉/水印/署名，不动文字、不栅格化）──
+      if (action === 'patch') {
+        const hex = color.replace('#', '')
+        if (!/^[0-9a-fA-F]{6}$/.test(hex)) throw new Error(`颜色要写成 #rrggbb：${color}`)
+        const channels = { r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16) }
+        const paintedResult = await paintRects(new Uint8Array(await readFile(source)), boxes, channels)
+        await writeFile(output as string, paintedResult.bytes)
+        return {
+          text: [
+            `已生成：${output}`,
+            `在 ${paintedResult.painted} 个矩形内重绘了 ${color}（原位覆盖：文字层仍可提取、页面未栅格化）`,
+            '注意：图片像素本身没有被修改，只是被色块盖住；要真正删除图片内容，请走「pdf_images export → 涂 → build」。',
+          ].join('\n'),
+        }
+      }
 
       // 先读出"每个框里原本有哪些文字"（来自文字层），交给核心按**内容**匹配删除。
       const targetsByPage = new Map<number, string[]>()
