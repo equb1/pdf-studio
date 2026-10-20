@@ -268,5 +268,31 @@ rmSync(WORK, { recursive: true, force: true })
   rmSync(dir, { recursive: true, force: true })
 }
 
+
+// ── 工具层 action=patch（覆盖 output 解析与写盘 ✓）──────────────
+{
+  const dir = mkdtempSync(join(tmpdir(), 'pdf-patch-tool-'))
+  const src = join(dir, 'src.pdf')
+  const out = join(dir, 'patched.pdf')
+  {
+    const doc = await PDFDocument.create()
+    const font = await doc.embedFont(StandardFonts.Helvetica)
+    const page = doc.addPage([400, 600])
+    page.drawText('HEADER TO COVER', { x: 40, y: 560, size: 18, font })
+    await writeFile(src, await doc.save())
+  }
+  const text = await toolsNever.get('pdf_redact').execute({
+    path: src, action: 'patch', color: '#ffffff', output: out,
+    rects: [{ page: 1, x: 30, y: 545, width: 240, height: 40 }],
+  }).then(v => v.text)
+  check('工具 patch：写出文件', existsSync(out), out)
+  check('工具 patch：结果说明是"重绘"而不是"删除"', text.includes('重绘') && text.includes('文字层仍可提取'), text.split('\n')[1]?.slice(0, 70))
+  const doc = await openPdfBytes(detachedSafeCopy(new Uint8Array(await readFile(out))))
+  const lines = (await extractTextLayer(doc, 1)).map(l => l.text.trim())
+  check('工具 patch：文字仍在（只盖不删）', lines.some(x => x.includes('HEADER TO COVER')), lines.join(' | ').slice(0, 60))
+  rmSync(dir, { recursive: true, force: true })
+}
+
+
 console.log(`\n${failed === 0 ? 'ALL PDF-REDACT CHECKS PASSED（单段流 + 多段流文本页 + patch 原位涂色；图片/扫描页按纪律不做）' : `${failed} check(s) FAILED`}`)
 if (failed > 0) process.exitCode = 1

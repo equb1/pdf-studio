@@ -2503,7 +2503,9 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       })
       const color = optionalString(args, 'color') ?? '#000000'
       const isApply = action === 'apply'
-      const output = isApply ? resolveOutput(source, args, '-redacted', options.workspaceRoot) : undefined
+      // patch 同样要写盘，所以和 apply 一样需要 output
+      const writesOutput = action === 'apply' || action === 'patch'
+      const output = writesOutput ? resolveOutput(source, args, '-redacted', options.workspaceRoot) : undefined
       const gate = authorize({
         tool: 'pdf_redact',
         action,
@@ -2516,7 +2518,9 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
               `把 ${boxes.length} 个矩形里的文字**从内容流删除**（复制/搜索/提取都拿不到），并补 ${color} 色块`,
               '落在框里的注释一并删除',
             ]
-          : ['空跑：只报告会删掉什么，不写任何文件'],
+          : action === 'patch'
+            ? [`把 ${boxes.length} 个矩形内重绘为 ${color}（不动文字层、不栅格化整页）`, `结果写入：${output}`]
+            : ['空跑：只报告会删掉什么，不写任何文件'],
         hints: ['先用 pdf_extract_text 拿到精确坐标，再 preview 确认，最后 apply', '坐标是 pt、原点左下（与 pdf_crop 的 box 同一套）'],
         ...confirmationArgs(options, args),
       })
