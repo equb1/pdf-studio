@@ -121,7 +121,7 @@ export interface ToolRegistry {
 
 /** 数组元素的形状：比顶层参数轻，`description` 可选（`items: { type: 'integer' }` 是合法写法）。 */
 interface ParamItems {
-  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | Array<'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'>
   description?: string
   required?: boolean
   enum?: readonly string[]
@@ -132,7 +132,7 @@ interface ParamItems {
 
 /** Shape of a tool's parameter description, as `defineTool` expects it. */
 interface ParamSpec {
-  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | Array<'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'>
   required?: boolean
   enum?: readonly string[]
   items?: ParamItems
@@ -337,11 +337,22 @@ function assertArgs(parameters: Record<string, unknown>, args: Record<string, un
   for (const [key, schema] of Object.entries(properties)) {
     const value = args[key]
     if (value === undefined || value === null) continue
-    const type = schema.type
-    if (type === 'string' && typeof value !== 'string') problems.push(`${key} must be a string`)
-    if (type === 'boolean' && typeof value !== 'boolean') problems.push(`${key} must be a boolean`)
-    if ((type === 'number' || type === 'integer') && typeof value !== 'number') problems.push(`${key} must be a number`)
-    if (type === 'array' && !Array.isArray(value)) problems.push(`${key} must be an array`)
+    const declared = Array.isArray(schema.type) ? schema.type as unknown[] : [schema.type]
+    const matchesType = (candidate: unknown): boolean => declared.some((raw) => {
+      if (raw === 'string') return typeof candidate === 'string'
+      if (raw === 'boolean') return typeof candidate === 'boolean'
+      if (raw === 'number' || raw === 'integer') return typeof candidate === 'number'
+      if (raw === 'array') return Array.isArray(candidate)
+      if (raw === 'object') return typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)
+      return true
+    })
+    if (!matchesType(value)) {
+      const names = declared.map(entry => String(entry)).join(' | ')
+      const single = declared.length === 1 ? String(declared[0]) : ''
+      const article = single === 'array' || single === 'object' ? 'an' : 'a'
+      const expected = single === 'integer' ? 'number' : single
+      problems.push(single === '' ? `${key} must be ${names}` : `${key} must be ${article} ${expected}`)
+    }
     const allowed = schema.enum as unknown[] | undefined
     if (Array.isArray(allowed) && allowed.length > 0 && !allowed.includes(value)) {
       problems.push(`${key} must be one of ${allowed.join(', ')}`)
@@ -1253,9 +1264,9 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         description: '是否把水印标记为 /Artifact（默认 true）：声明它是装饰而非正文，辅助阅读与 PDF/UA 会跳过它。',
       },
       pages: {
-        type: 'array',
+        type: ['array', 'string'],
         items: { type: 'integer' },
-        description: '要加水印的页码（从 1 开始），默认全部；越界页号会被忽略并提示。',
+        description: '要加水印的页码：区间字符串 "1-3,7"（也支持 odd/even）或数组 [1,3]；省略则全部；越界页号会被忽略并提示。',
       },
       output: { type: 'string', description: 'add / remove 的输出路径。' },
     },
@@ -1371,7 +1382,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
         ...(typeof args.color === 'string' ? { color: args.color } : {}),
         ...(typeof args.margin === 'number' ? { margin: args.margin } : {}),
         ...(typeof args.artifact === 'boolean' ? { artifact: args.artifact } : {}),
-        ...(Array.isArray(args.pages) ? { pages: (args.pages as unknown[]).map(Number) } : {}),
+        ...(args.pages === undefined ? {} : { pages: args.pages as number[] | string }),
       }
       const watermarkDefaults: Record<string, unknown> = {}
       if (args.render === undefined) watermarkDefaults.render = 'text'

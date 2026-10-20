@@ -31,6 +31,7 @@
  */
 
 import { deflateSync } from 'node:zlib'
+import { pageSelection } from './page-text.ts'
 import { loadPdfForWrite } from './pdf.ts'
 import {
   PDFArray,
@@ -105,7 +106,8 @@ export interface WatermarkSpec {
   /** Explicit font file for text that needs glyphs the standard fonts lack. */
   fontPath?: string
   /** Pages to stamp, 1-based. Defaults to every page. */
-  pages?: number[]
+  /** 页码：数组 [1,3] 或区间字符串 "1-3,7"（都支持）。 */
+  pages?: number[] | string
 }
 
 /** Outcome of a stamping run. */
@@ -680,7 +682,9 @@ export async function addWatermark(
 
   // ── pages ─────────────────────────────────────────────────────────────────
   const pages = doc.getPages()
-  const requested = spec.pages === undefined ? pages.map((_, index) => index + 1) : spec.pages
+  const requested = spec.pages === undefined
+    ? pages.map((_, index) => index + 1)
+    : typeof spec.pages === 'string' ? pageSelection(spec.pages, pages.length) : spec.pages
   const targets = requested.filter(page => Number.isInteger(page) && page >= 1 && page <= pages.length)
   const outOfRange = requested.filter(page => !targets.includes(page))
   if (targets.length === 0) {
