@@ -19,7 +19,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { PDFDocument } from 'pdf-lib'
-import { openPdf, pageSize, type PdfDoc } from '../core/pdf.ts'
+import { openPdf, pageSize, type PdfDoc, loadPdfForWrite } from '../core/pdf.ts'
 import {
   listReadableRuns,
   readPageContentStreams,
@@ -201,7 +201,7 @@ export async function readEditableDocument(sourcePath: string): Promise<Editable
   const notes: string[] = []
   const content: EditablePage[] = []
   try {
-    const pdfLibDoc = await PDFDocument.load(await readFile(sourcePath))
+    const pdfLibDoc = await loadPdfForWrite(await readFile(sourcePath))
     const pdfLibPages = pdfLibDoc.getPages()
 
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
@@ -250,7 +250,7 @@ export async function applyTextEdits(
   edits: Array<{ page: number; targetId: string; to: string; fontSize?: number }>,
   options: { fonts?: { path?: string } } = {},
 ): Promise<{ outputPath: string; pages: number; applied: number; notes: string[]; written: boolean }> {
-  const doc = await PDFDocument.load(await readFile(sourcePath))
+  const doc = await loadPdfForWrite(await readFile(sourcePath))
   const pages = doc.getPages()
   const notes: string[] = []
   let applied = 0

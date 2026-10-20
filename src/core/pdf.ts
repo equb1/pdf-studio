@@ -11,6 +11,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { PDFDocument } from 'pdf-lib'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
@@ -180,4 +181,21 @@ export async function opNames(fnArray: readonly number[]): Promise<string[]> {
     if (!byCode.has(code)) byCode.set(code, name)
   }
   return fnArray.map(code => byCode.get(code) ?? 'op:' + String(code))
+}
+
+/** 为写盘而载入：把"文件带 /Encrypt"翻译成可执行的中文提示（所有写盘路径统一走这里）。 */
+export async function loadPdfForWrite(
+  bytes: Uint8Array,
+  options: { updateMetadata?: boolean } = {},
+): Promise<PDFDocument> {
+  try {
+    return await PDFDocument.load(bytes, options as never)
+  } catch (error) {
+    if (/encrypt/i.test(String((error as Error | undefined)?.message ?? ''))) {
+      throw new Error(
+        '这份 PDF 带加密（/Encrypt），pdf-lib 无法直接改写它。请先 `pdf_protect action=decrypt` 解除保护'
+        + '（对"无需密码即可打开、仅权限受限"的文件，password 留空即可），或改用已解密的副本。')
+    }
+    throw error
+  }
 }

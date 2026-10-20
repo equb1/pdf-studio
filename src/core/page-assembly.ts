@@ -39,6 +39,7 @@
  */
 
 import { basename } from 'node:path'
+import { loadPdfForWrite } from './pdf.ts'
 import { readFile } from 'node:fs/promises'
 import {
   PDFArray,
@@ -593,7 +594,7 @@ export async function detectGutter(
 ): Promise<GutterDetection> {
   const scale = options.scale !== undefined && options.scale > 0 ? options.scale : 1
   const bytes = new Uint8Array(await readFile(sourcePath))
-  const doc = await PDFDocument.load(bytes, { updateMetadata: false } as never)
+  const doc = await loadPdfForWrite(bytes, { updateMetadata: false } as never)
   const page = doc.getPages()[pageNumber - 1]
   if (page === undefined) throw new Error(`第 ${pageNumber} 页不存在`)
   const boxes = readPageBoxes(page)
@@ -954,7 +955,7 @@ export interface MergeResult {
 export async function loadPdfDocument(path: string): Promise<PDFDocument> {
   const bytes = new Uint8Array(await readFile(path))
   try {
-    return await PDFDocument.load(bytes, { updateMetadata: false } as never)
+    return await loadPdfForWrite(bytes, { updateMetadata: false } as never)
   } catch (error) {
     const name = (error as Error)?.name ?? ''
     if (name.includes('Encrypted')) {

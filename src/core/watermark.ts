@@ -31,6 +31,7 @@
  */
 
 import { deflateSync } from 'node:zlib'
+import { loadPdfForWrite } from './pdf.ts'
 import {
   PDFArray,
   PDFDict,
@@ -491,7 +492,7 @@ export async function addWatermark(
     // otherwise restamps /ModDate with the current time on every save, which makes
     // two runs over the same input produce different bytes — and makes content
     // hashes useless for verifying that a stamping run changed only the mark.
-    doc = await PDFDocument.load(sourceBytes, { updateMetadata: false })
+    doc = await loadPdfForWrite(sourceBytes, { updateMetadata: false })
   } catch (error) {
     if (/encrypt/i.test(String((error as Error | undefined)?.message ?? ''))) {
       throw new Error(
@@ -1176,7 +1177,7 @@ function paginationMarkVerdict(
  * *not* to be a watermark, which used to be dropped in silence.
  */
 export async function scanWatermarks(bytes: Uint8Array): Promise<WatermarkScan> {
-  const doc = await PDFDocument.load(bytes, { updateMetadata: false })
+  const doc = await loadPdfForWrite(bytes, { updateMetadata: false })
   const candidates: WatermarkCandidate[] = []
   const refused: WatermarkScan['refused'] = []
   const pages = doc.getPages()
@@ -1577,7 +1578,7 @@ export async function removeWatermarks(
     return { bytes, removed, skipped, notes }
   }
 
-  const doc = await PDFDocument.load(bytes, { updateMetadata: false })
+  const doc = await loadPdfForWrite(bytes, { updateMetadata: false })
   const pages = doc.getPages()
 
   for (const candidate of removed) {

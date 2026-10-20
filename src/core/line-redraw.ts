@@ -56,6 +56,7 @@
  */
 
 import { deflateSync } from 'node:zlib'
+import { loadPdfForWrite } from './pdf.ts'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { PDFArray, PDFDocument, PDFName, PDFRawStream, concatTransformationMatrix, rgb } from 'pdf-lib'
@@ -1268,7 +1269,7 @@ export async function redrawLineInPdfBytes(
   bytes: Uint8Array,
   options: RedrawOptions & { page: number },
 ): Promise<{ bytes: Uint8Array; result: RedrawResult }> {
-  const doc = await PDFDocument.load(bytes)
+  const doc = await loadPdfForWrite(bytes)
   const page = doc.getPages()[options.page - 1]
   if (page === undefined) {
     throw new Error(`第 ${options.page} 页不存在（该文件共 ${doc.getPageCount()} 页）。`)

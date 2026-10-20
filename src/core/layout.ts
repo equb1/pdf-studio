@@ -17,6 +17,7 @@
  */
 
 import { PDFArray, PDFDocument, PDFName, PDFRawStream } from 'pdf-lib'
+import { loadPdfForWrite } from './pdf.ts'
 import type { PdfRect } from './contracts.ts'
 
 /** 支持的纸张（pt）。 */
@@ -137,7 +138,7 @@ export async function resizePages(
   bytes: Uint8Array,
   options: { target: [number, number]; margin?: number; mode?: 'fit' | 'stretch'; pages?: number[] },
 ): Promise<{ bytes: Uint8Array; resized: number[]; scales: Record<number, number> }> {
-  const source = await PDFDocument.load(bytes, { updateMetadata: false })
+  const source = await loadPdfForWrite(bytes, { updateMetadata: false })
   const output = await PDFDocument.create()
   const wanted = options.pages ?? source.getPages().map((_, index) => index + 1)
   const [targetWidth, targetHeight] = options.target
@@ -173,7 +174,7 @@ export async function nupPages(
     sheets?: Array<Array<number | undefined>>
   },
 ): Promise<{ bytes: Uint8Array; sheets: number }> {
-  const source = await PDFDocument.load(bytes, { updateMetadata: false })
+  const source = await loadPdfForWrite(bytes, { updateMetadata: false })
   const output = await PDFDocument.create()
   const { cols, rows } = nupGrid(options.perSheet)
   const margin = options.margin ?? 0

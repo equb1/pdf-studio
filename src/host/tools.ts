@@ -41,7 +41,7 @@ import {
 } from 'pdf-lib'
 import { analyzeDocument, applyTextEdits, exportSearchable, inspectDocument, protectPdf, readEditableDocument, reportWatermarks, stampWatermark, stripWatermarks, lineSummary } from './engine.ts'
 import { redrawLineInPdfBytes } from '../core/line-redraw.ts'
-import { openPdf, openPdfBytes } from '../core/pdf.ts'
+import { openPdf, openPdfBytes, loadPdfForWrite } from '../core/pdf.ts'
 import { extractTextLayer, formatEmptyExtractionNotice } from '../core/text-layer.ts'
 import {
   applyTemplate,
@@ -1658,7 +1658,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
       if (gate.kind === 'refused') throw new Error(gate.message)
 
-      const pdfDoc = await PDFDocument.load(new Uint8Array(await readFile(source)), { updateMetadata: false })
+      const pdfDoc = await loadPdfForWrite(new Uint8Array(await readFile(source)), { updateMetadata: false })
       const page = pdfDoc.getPages()[pageNumber - 1]
       if (page === undefined) throw new Error(`页码 ${pageNumber} 超出范围（共 ${pdfDoc.getPageCount()} 页）`)
       const size = page.getSize()
@@ -1836,7 +1836,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
       if (gate.kind === 'refused') throw new Error(gate.message)
 
-      const doc = await PDFDocument.load(new Uint8Array(await readFile(source)), { updateMetadata: false })
+      const doc = await loadPdfForWrite(new Uint8Array(await readFile(source)), { updateMetadata: false })
       const pageCount = doc.getPageCount()
       const selected = pageSelection(pages, pageCount)
       if (selected.length === 0) throw new Error('没有选中任何页')
@@ -2101,7 +2101,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
       if (gate.kind === 'refused') throw new Error(gate.message)
 
-      const doc = await PDFDocument.load(new Uint8Array(await readFile(source)), { updateMetadata: false })
+      const doc = await loadPdfForWrite(new Uint8Array(await readFile(source)), { updateMetadata: false })
       const form = doc.getForm()
       const fields = form.getFields()
       const describe = (field: unknown): string => {
@@ -2217,7 +2217,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       }
       const output = resolveOutput(source, args, '-layout', options.workspaceRoot)
       const bytes = new Uint8Array(await readFile(source))
-      const probe = await PDFDocument.load(bytes, { updateMetadata: false })
+      const probe = await loadPdfForWrite(bytes, { updateMetadata: false })
       const pageCount = probe.getPageCount()
       const annots = countAnnotsPerPage(probe)
       const defaultSize = action === 'booklet' ? 'a4-landscape' : 'a4'
@@ -2377,7 +2377,7 @@ export function buildToolDefinitions(options: ToolOptions): unknown[] {
       if (gate.kind === 'plan') return { text: renderPlanPrompt(gate.plan) }
       if (gate.kind === 'refused') throw new Error(gate.message)
 
-      const doc = await PDFDocument.load(new Uint8Array(await readFile(source)), { updateMetadata: false })
+      const doc = await loadPdfForWrite(new Uint8Array(await readFile(source)), { updateMetadata: false })
       if (action === 'get') {
         const info = readMetadata(doc)
         const lines = [`${basename(source)}：${info.pages} 页`]

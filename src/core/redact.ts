@@ -28,7 +28,7 @@ import { locateShowText, parseOperations, showStrings, tokenize, type Operation 
 import { listReadableRuns, readPageContentStreams } from './text-editor.ts'
 import { readPageFonts } from './font-map.ts'
 import { finalGraphicsState, IDENTITY_MATRIX, matrixXScale, multiplyMatrices, trackGraphicsState } from './line-redraw.ts'
-import { openPdfBytes } from './pdf.ts'
+import { openPdfBytes, loadPdfForWrite } from './pdf.ts'
 import { extractTextLayer } from './text-layer.ts'
 
 /** 一个待删除的矩形（页面坐标，pt，原点左下）。 */
@@ -154,7 +154,7 @@ export async function redactPages(
     targetLinesByPage?: ReadonlyMap<number, ReadonlyArray<{ x: number; y: number; width: number; height: number }>>
   },
 ): Promise<{ bytes: Uint8Array; report: RedactReport }> {
-  const doc = await PDFDocument.load(bytes, { updateMetadata: false })
+  const doc = await loadPdfForWrite(bytes, { updateMetadata: false })
   const context = doc.context as unknown as {
     lookup(ref: unknown): unknown
     register(value: unknown): unknown
@@ -431,7 +431,7 @@ export async function paintRects(
   color: { r: number; g: number; b: number },
 ): Promise<{ bytes: Uint8Array; painted: number }> {
   if (boxes.length === 0) throw new Error('需要至少一个矩形')
-  const doc = await PDFDocument.load(bytes)
+  const doc = await loadPdfForWrite(bytes)
   const pages = doc.getPages()
   let painted = 0
   for (const box of boxes) {
